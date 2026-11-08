@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from panel import __version__
+from panel.access import is_allowed, normalize
 from panel.api import build_router
 from panel.auth import LoginLimiter
 from panel.db import Database, Store
@@ -59,6 +60,19 @@ class App:
     def setup_required(self) -> bool:
         return self.store.user_count() == 0
 
+    def access_blocked(self, ip: str, path: str) -> bool:
+        """面板级 IP 白名单。空名单=不限制；/sub/ 默认不限制。"""
+        settings = self.store.settings()
+        text = (settings.get("access_allowlist") or "").strip()
+        if not text:
+            return False
+        if path == "/healthz":
+            return False
+        if path.startswith("/sub/") and settings.get("access_allowlist_sub", "0") != "1":
+            return False
+        include_loopback = settings.get("access_allowlist_loopback", "1") == "1"
+        return not is_allowed(ip, text, include_loopback)
+
     # ------------------------------------------------------------ 日志
 
     @staticmethod
@@ -91,13 +105,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["serve", "sweep", "status"],
+        choices=["serve", "sweep", "status", "allow"],
         default="serve",
-        help="serve=启动面板（默认）, sweep=停用过期订阅, status=打印概览",
+        help="serve=启动面板（默认）, sweep=采样并停用过期订阅, status=打印概览, allow=追加白名单 IP",
+    )
+    parser.add_argument(
+        "value",
+        nargs="?",
+        help="allow 命令的参数：IP / CIDR，或 clear 清空白名单",
     )
     args = parser.parse_args(argv)
 
     app = App(args.data_dir)
+
+    if args.command == "allow":
+        if not args.value:
+            print("用法: python3 app.py allow <IP 或 CIDR>   |   python3 app.py allow clear", file=sys.stderr)
+            return 2
+        if args.value.lower() == "clear":
+            app.store.save_settings({"access_allowlist": ""})
+            print("访问白名单已清空，面板恢复为不限制")
+            return 0
+        try:
+            text = normalize(f"{app.store.setting('access_allowlist')}\n{args.value}")
+        except ValueError as exc:
+            print(f"格式不正确：{exc}", file=sys.stderr)
+            return 2
+        app.store.save_settings({"access_allowlist": text})
+        print("当前访问白名单：\n" + text)
+        return 0
 
     if args.command == "sweep":
         # 先采样流量，否则额度判断用的还是上一次的旧数据

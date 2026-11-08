@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from . import __version__
+from .access import is_allowed, normalize
 from .auth import hash_password, password_problem, verify_password
 from .db import DEFAULT_SETTINGS
 from .httpd import COOKIE_NAME, ApiError, Request, Response, Router
@@ -344,6 +345,7 @@ def state(app, req: Request) -> dict:
         "user": _public_user(user),
         "now": now(),
         "version": __version__,
+        "client_ip": req.client_ip,
         "public_host": store.public_host(),
         "sub_base": _sub_base(app, req),
         "settings": settings,
@@ -642,6 +644,27 @@ def update_settings(app, req: Request) -> dict:
     if "sub_base" in payload and payload["sub_base"]:
         if not payload["sub_base"].startswith(("http://", "https://")):
             raise ApiError(400, "订阅域名必须以 http:// 或 https:// 开头")
+
+    for key in ("access_allowlist_loopback", "access_allowlist_sub"):
+        if key in payload:
+            payload[key] = "1" if payload[key].lower() in ("1", "true", "on", "yes") else "0"
+
+    if "access_allowlist" in payload:
+        if len(payload["access_allowlist"]) > 4000:
+            raise ApiError(400, "白名单条目过多")
+        try:
+            payload["access_allowlist"] = normalize(payload["access_allowlist"])
+        except ValueError as exc:
+            raise ApiError(400, f"白名单格式不正确：{exc}")
+        if payload["access_allowlist"]:
+            include_loopback = (
+                payload.get("access_allowlist_loopback", app.store.setting("access_allowlist_loopback")) == "1"
+            )
+            if not is_allowed(req.client_ip, payload["access_allowlist"], include_loopback):
+                raise ApiError(
+                    400,
+                    "当前 IP 不在白名单里，保存后会把你自己锁在外面；请先把当前 IP 加进去",
+                )
 
     settings = app.store.save_settings(payload)
     _audit(app, req, "修改设置", "", ", ".join(sorted(payload)))

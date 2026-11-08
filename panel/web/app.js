@@ -1236,6 +1236,35 @@ function viewSettings() {
       ${settingsField('sub_interval_hours', '客户端更新间隔（小时）', '写入订阅响应的 Profile-Update-Interval', 'number', '12')}
     </div>
 
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <h3>访问白名单</h3><div class="spacer"></div>
+        <span class="card-sub">当前 IP：<code>${esc(STATE.client_ip || '未知')}</code></span>
+        <button class="btn btn-sm" id="fill-my-ip">填入当前 IP</button>
+      </div>
+      <div class="field">
+        <label>允许访问面板的 IP / CIDR</label>
+        <textarea class="textarea" name="access_allowlist" data-setting rows="4"
+          placeholder="1.2.3.4&#10;10.0.0.0/8&#10;2001:db8::/32">${esc(s.access_allowlist || '')}</textarea>
+        <div class="hint">一行一个，支持 IPv4 / IPv6 / CIDR；留空表示不限制。
+          只限制面板与 API，<b>不影响 <code>/sub/</code> 订阅</b>。</div>
+      </div>
+      <label class="check-item">
+        <input type="checkbox" name="access_allowlist_loopback" data-setting
+          ${s.access_allowlist_loopback !== '0' ? 'checked' : ''}>
+        <span>始终允许本机回环 <code>127.0.0.1 / ::1</code>（SSH 隧道、本机 nginx 需要）</span>
+      </label>
+      <label class="check-item" style="margin-top:8px">
+        <input type="checkbox" name="access_allowlist_sub" data-setting
+          ${s.access_allowlist_sub === '1' ? 'checked' : ''}>
+        <span>同时限制订阅接口 <code>/sub/</code>（默认关闭，否则客户端会拉不到订阅）</span>
+      </label>
+      <div class="notice warn" style="margin-top:12px">
+        保存时如果当前 IP 不在名单里，面板会拒绝保存，避免把自己锁死。
+        真锁死了就在服务器上执行 <code>python3 app.py allow 你的IP</code>。
+      </div>
+    </div>
+
     <div style="margin-top:16px;display:flex;gap:10px">
       <button class="btn btn-primary" id="save-settings">保存设置</button>
     </div>
@@ -1268,7 +1297,9 @@ function viewSettings() {
 function bindSettings() {
   $('#save-settings').addEventListener('click', async () => {
     const body = {};
-    $$('[data-setting]').forEach((el) => { body[el.name] = el.value; });
+    $$('[data-setting]').forEach((el) => {
+      body[el.name] = el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value;
+    });
     const btn = $('#save-settings');
     btn.disabled = true;
     try {
@@ -1280,6 +1311,26 @@ function bindSettings() {
       btn.disabled = false;
     }
   });
+
+  const fillIp = $('#fill-my-ip');
+  if (fillIp) {
+    fillIp.addEventListener('click', () => {
+      const box = $('textarea[name=access_allowlist]');
+      const ip = STATE.client_ip || '';
+      if (!box || !ip) {
+        toast('拿不到当前 IP', 'err');
+        return;
+      }
+      const lines = box.value.split('\n').map((line) => line.trim()).filter(Boolean);
+      if (lines.includes(ip)) {
+        toast('当前 IP 已经在列表里');
+        return;
+      }
+      lines.push(ip);
+      box.value = lines.join('\n');
+      toast('已填入当前 IP，记得点「保存设置」');
+    });
+  }
 
   $('#save-password').addEventListener('click', async () => {
     const form = $('#password-form');

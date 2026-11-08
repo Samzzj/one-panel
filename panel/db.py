@@ -47,6 +47,12 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # 订阅
     "sub_base": "",
     "sub_interval_hours": "12",
+    # 访问白名单（空 = 不限制）
+    "access_allowlist": "",
+    # 始终允许 127.0.0.1 / ::1（SSH 隧道、本机 nginx 需要）
+    "access_allowlist_loopback": "1",
+    # 是否同时限制 /sub/ 订阅接口（默认否，否则客户端拉不到订阅）
+    "access_allowlist_sub": "0",
 }
 
 SCHEMA = """

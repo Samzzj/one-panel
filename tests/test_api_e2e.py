@@ -289,6 +289,61 @@ class ApiFlowTest(unittest.TestCase):
         self.assertEqual(status, 200, reset)
         self.assertEqual(reset["sub"]["used_bytes"], 0)
 
+        # --- 访问白名单 ---
+        status, state_ip, _ = c.request("GET", "/api/state")
+        self.assertEqual(state_ip["client_ip"], "127.0.0.1")
+
+        status, _, _ = c.request(
+            "POST",
+            "/api/settings",
+            {"access_allowlist": "203.0.113.0/24", "access_allowlist_loopback": "1", "access_allowlist_sub": "0"},
+        )
+        self.assertEqual(status, 200)
+
+        status, _, _ = c.request("GET", "/api/state", extra={"X-Forwarded-For": "8.8.8.8"})
+        self.assertEqual(status, 403, "名单外 IP 应被拒绝")
+        status, _, _ = c.request("GET", "/api/state", extra={"X-Forwarded-For": "203.0.113.9"})
+        self.assertEqual(status, 200, "名单内 IP 应放行")
+
+        # 页面也要拦，并且返回 HTML 而不是 JSON
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/", headers={"X-Forwarded-For": "8.8.8.8"})
+        page = conn.getresponse()
+        html = page.read().decode("utf-8", "replace")
+        self.assertEqual(page.status, 403)
+        self.assertIn("text/html", page.getheader("Content-Type") or "")
+        self.assertIn("白名单", html)
+        conn.close()
+
+        # 订阅默认不受白名单影响
+        status, _, _ = c.request("GET", f"/sub/{token}", csrf=False, extra={"X-Forwarded-For": "8.8.8.8"})
+        self.assertEqual(status, 200, "默认不应拦 /sub/")
+
+        status, _, _ = c.request("POST", "/api/settings", {"access_allowlist_sub": "1"})
+        self.assertEqual(status, 200)
+        status, _, _ = c.request("GET", f"/sub/{token}", csrf=False, extra={"X-Forwarded-For": "8.8.8.8"})
+        self.assertEqual(status, 403)
+        status, _, _ = c.request("GET", f"/sub/{token}", csrf=False, extra={"X-Forwarded-For": "203.0.113.9"})
+        self.assertEqual(status, 200)
+
+        # 不允许保存会锁死自己的配置
+        status, body, _ = c.request(
+            "POST",
+            "/api/settings",
+            {"access_allowlist": "8.8.8.8", "access_allowlist_loopback": "0"},
+        )
+        self.assertEqual(status, 400, body)
+
+        # 清理，恢复默认
+        status, _, _ = c.request(
+            "POST",
+            "/api/settings",
+            {"access_allowlist": "", "access_allowlist_loopback": "1", "access_allowlist_sub": "0"},
+        )
+        self.assertEqual(status, 200)
+        status, _, _ = c.request("GET", "/api/state", extra={"X-Forwarded-For": "8.8.8.8"})
+        self.assertEqual(status, 200, "清空白名单后应恢复")
+
         # --- 退出 / 登录 ---
         status, _, _ = c.request("POST", "/api/logout", {})
         self.assertEqual(status, 200)

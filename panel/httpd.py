@@ -38,6 +38,19 @@ SECURITY_HEADERS = {
     ),
 }
 
+FORBIDDEN_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>403 · 访问受限</title></head>
+<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#080a0f;
+color:#e8ecf5;font:14px/1.7 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif">
+<div style="max-width:520px;padding:32px">
+  <div style="font-size:13px;letter-spacing:2px;color:#8a93a8">REALITY PANEL</div>
+  <h1 style="font-size:22px;margin:8px 0 12px">403 · 当前 IP 不在访问白名单内</h1>
+  <p style="color:#8a93a8;margin:0 0 14px">面板开启了 IP 白名单。如果你确信应该能访问，请在服务器上执行：</p>
+  <pre style="background:#11151e;border:1px solid #1e2532;border-radius:10px;padding:12px 14px;
+overflow:auto;color:#c9d4ea">python3 app.py allow 你的公网IP</pre>
+</div></body></html>
+"""
+
 
 class ApiError(Exception):
     def __init__(self, status: int, message: str):
@@ -156,9 +169,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _client_ip(self) -> str:
         # 默认只信任本机反代；面板建议用 SSH 隧道访问
-        forwarded = self.headers.get("X-Forwarded-For", "")
-        if self.client_address[0] in ("127.0.0.1", "::1") and forwarded:
-            return forwarded.split(",")[0].strip()
+        if self.client_address[0] in ("127.0.0.1", "::1"):
+            cf = (self.headers.get("CF-Connecting-IP") or "").strip()
+            if cf:
+                return cf
+            forwarded = self.headers.get("X-Forwarded-For", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
+            real = (self.headers.get("X-Real-IP") or "").strip()
+            if real:
+                return real
         return self.client_address[0]
 
     def _read_body(self) -> bytes:
@@ -188,6 +208,16 @@ class Handler(BaseHTTPRequestHandler):
             if len(path) > 1:
                 path = path.rstrip("/") or "/"
             query = {k: v[0] for k, v in parse_qs(parts.query).items()}
+
+            # 白名单要在读 body / 查会话之前判断，避免被拦的请求还消耗资源
+            if app.access_blocked(self._client_ip(), path):
+                if path.startswith("/api/"):
+                    blocked = Response.json({"error": "当前 IP 不在访问白名单内"}, 403)
+                else:
+                    blocked = Response.text(FORBIDDEN_PAGE, 403, "text/html; charset=utf-8")
+                self._send(blocked, method)
+                return
+
             body = self._read_body()
             cookies = self._cookies()
             request = Request(

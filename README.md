@@ -55,6 +55,7 @@ REALITY 的特点是**自己不持有证书**：对没有通过认证的连接�
 - **流量统计**：Xray Stats API 读取每用户上下行，按增量累计；timer 每 10 分钟自动采样
 - **到期 / 额度**：采样 → 判断 → 停用 → 重载一条龙，不需要人工点
 - **备份与审计**：JSON 导出 / 覆盖恢复，关键操作写入审计日志（自动保留 2000 条）
+- **访问白名单**：面板与 API 只允许指定 IP / CIDR；订阅接口可单独决定是否一起限制，保存时会防止把自己锁死
 - **安全**：PBKDF2 密码、HttpOnly 会话、CSRF、登录限流、CSP、参数化 SQL
 - **零依赖**：Python 3.8+ 标准库；前端原生 JS，无构建步骤
 
@@ -178,12 +179,13 @@ bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-rele
 | 多管理员 / API Token | ✗ | Zefira、SublinkPro | 单管理员模型更简单 |
 | Docker 部署 | ✗ | SublinkPro、FLYX | 零依赖直接跑更轻 |
 | 面板内一键升级 | ✗ | Zefira、FLYX | 升级就是替换目录 + 重启，不想让面板改自己的代码 |
+| 面板 IP 白名单 | ✓ | Milk、Zefira | 已补 |
 | 二维码 | ✓ | 都有 | 已补 |
 | 操作审计 | ✓ | Zefira、SublinkPro | 已补 |
 | 备份导出 / 恢复 | ✓ | 多数 | 已补 |
 | 流量自动采样 | ✓ | 多数 | 已补（否则额度不会自动生效） |
 
-对照之后补上的还有 GitHub Actions CI、`SECURITY.md`、`CONTRIBUTING.md`。
+对照之后补上的还有 IP 白名单、GitHub Actions CI、`SECURITY.md`、`CONTRIBUTING.md`。
 
 ---
 
@@ -194,6 +196,7 @@ reality-panel/
 ├── app.py                  # 入口：HTTP 服务 + CLI（serve / sweep / status）
 ├── panel/
 │   ├── api.py              # JSON API 与订阅端点
+│   ├── access.py           # IP / CIDR 访问白名单
 │   ├── auth.py             # PBKDF2 密码、登录限流
 │   ├── db.py               # SQLite 建表与数据访问
 │   ├── httpd.py            # 极简路由、静态资源、会话/CSRF
@@ -207,7 +210,7 @@ reality-panel/
 │   ├── install.sh          # 安装面板 + Xray + systemd + sudoers
 │   ├── selfsteal.sh        # 证书 + Nginx 回落配置
 │   └── nginx-selfsteal.conf.example
-├── tests/                  # 38 个单元 / 端到端测试
+├── tests/                  # 47 个单元 / 端到端测试
 ├── .github/workflows/ci.yml
 ├── SECURITY.md
 ├── CONTRIBUTING.md
@@ -234,6 +237,10 @@ sudo -u reality-panel env REALITY_PANEL_DATA=/var/lib/reality-panel \
 
 # 查看概览
 python3 app.py status --data-dir /var/lib/reality-panel
+
+# 白名单：追加一个 IP / 清空
+python3 app.py allow 1.2.3.4 --data-dir /var/lib/reality-panel
+python3 app.py allow clear --data-dir /var/lib/reality-panel
 
 # 备份（数据库 + 配置）
 tar czf panel-backup.tgz /var/lib/reality-panel /usr/local/etc/xray/config.json
@@ -280,6 +287,19 @@ Clash 侧需要较新的 mihomo，老内核会直接忽略该节点。
 面板通过 `xray api statsquery` 读取统计。确认 Xray 正在运行、`xray_api` 地址
 （默认 `127.0.0.1:10085`）没被占用，并且配置里的 `policy` 统计项没有被你手动删掉。
 
+**把自己锁在白名单外面了**
+
+在服务器上执行：
+
+```bash
+python3 app.py allow 你的公网IP --data-dir /var/lib/reality-panel
+# 或者彻底清空
+python3 app.py allow clear --data-dir /var/lib/reality-panel
+```
+
+默认「始终允许回环」是开着的，所以通过 SSH 隧道访问一般不会被锁；
+只有关掉回环、又换了公网 IP 时才会遇到。
+
 **PROXY protocol 相关报错**
 
 `xver` 与 Nginx 的 `listen ... proxy_protocol` 必须同时开或同时关。
@@ -291,7 +311,7 @@ Clash 侧需要较新的 mihomo，老内核会直接忽略该节点。
 
 ```bash
 python3 app.py --port 8080 --data-dir ./data      # 本地跑
-python3 -m unittest discover -s tests -v          # 38 项测试
+python3 -m unittest discover -s tests -v          # 47 项测试
 ```
 
 测试覆盖：X25519 官方向量、链接与订阅编码、Clash YAML、Xray 配置结构、

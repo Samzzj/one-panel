@@ -4,7 +4,7 @@
 用法：
     python3 app.py                     # 默认 127.0.0.1:8080，数据在 ./data
     python3 app.py --host 0.0.0.0      # 直接对外（请自行加 TLS / 防火墙）
-    python3 app.py sweep               # 停用过期/超额订阅（可放进 cron）
+    python3 app.py sweep               # 采样流量 + 停用过期/超额订阅（systemd timer 调用）
 
 环境变量：
     REALITY_PANEL_DATA   数据目录
@@ -100,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     app = App(args.data_dir)
 
     if args.command == "sweep":
+        # 先采样流量，否则额度判断用的还是上一次的旧数据
+        app.xray.collect_stats()
         changed = app.store.sweep()
         if changed:
             app.mark_dirty()

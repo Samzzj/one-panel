@@ -472,6 +472,23 @@ tbody tr:hover { background: rgba(255, 255, 255, .018); }
 }
 .step-cmd .btn { position: absolute; top: 6px; right: 6px; }
 
+/* ---------------------------------------------------------------- 二维码 */
+
+.qr-box {
+  display: flex;
+  justify-content: center;
+  padding: 18px;
+  background: #fff;
+  border-radius: 12px;
+}
+
+.qr-box svg {
+  width: 100%;
+  max-width: 320px;
+  height: auto;
+  display: block;
+}
+
 /* ---------------------------------------------------------------- 弹窗 */
 
 .overlay {

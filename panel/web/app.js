@@ -23,6 +23,10 @@ const ICON = {
   edit: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/>', 14),
   trash: svg('<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>', 14),
   key: svg('<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2m-4 4 3 3m-6 0 2 2"/>', 14),
+  qr: svg('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3"/>', 14),
+  reset: svg('<path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/>', 14),
+  audit: svg('<path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/>'),
+  upload: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>', 15),
   refresh: svg('<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>', 15),
   download: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>', 15),
   arrow: svg('<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>', 14),
@@ -127,6 +131,38 @@ async function copyText(text) {
     ta.remove();
   }
   toast('已复制到剪贴板');
+}
+
+function showQr(title, text) {
+  if (typeof qrcode !== 'function') {
+    toast('二维码组件未加载，请刷新页面', 'err');
+    return;
+  }
+  let markup;
+  try {
+    const qr = qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
+    markup = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true });
+  } catch (err) {
+    toast(`二维码生成失败：${err.message || err}`, 'err');
+    return;
+  }
+  const m = openModal({
+    title,
+    body: `<div class="qr-box">${markup}</div>
+      <div class="copy-row" style="margin-top:14px">
+        <input class="input" readonly value="${esc(text)}">
+        <button class="btn btn-sm" data-copy="${esc(text)}">${ICON.copy}</button>
+      </div>
+      <div class="hint" style="margin-top:10px">用手机客户端扫码导入；订阅二维码在节点变更后仍然有效。</div>`,
+    footer: '<button class="btn" data-close2>关闭</button>',
+  });
+  $('[data-close2]', m.modal).onclick = () => m.close();
+  m.overlay.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-copy]');
+    if (btn) copyText(btn.dataset.copy);
+  });
 }
 
 function openModal({ title, body, footer = '', wide = false, onClose = null }) {
@@ -281,6 +317,7 @@ function renderShell() {
         <div class="nav-label">部署</div>
         ${navItem('selfsteal', ICON.chain, '自偷自向导')}
         ${navItem('logs', ICON.logs, '运行日志')}
+        ${navItem('audit', ICON.audit, '审计日志')}
         ${navItem('settings', ICON.settings, '设置')}
 
         <div class="sidebar-foot">
@@ -756,6 +793,7 @@ function viewSubs() {
       <td class="row-actions">
         <button class="btn btn-sm" data-act="links" data-id="${s.id}">订阅</button>
         <button class="icon-btn" data-act="edit" data-id="${s.id}" title="编辑">${ICON.edit}</button>
+        <button class="icon-btn" data-act="reset" data-id="${s.id}" title="重置流量">${ICON.reset}</button>
         <button class="icon-btn" data-act="rotate" data-id="${s.id}" title="重置链接与 UUID">${ICON.refresh}</button>
         <button class="icon-btn danger" data-act="del" data-id="${s.id}" title="删除">${ICON.trash}</button>
       </td>
@@ -887,6 +925,7 @@ async function openLinks(sub) {
         <div class="copy-row">
           <input class="input" id="link-sub" readonly value="${esc(data.sub_url)}">
           <button class="btn btn-sm" data-copy="${esc(data.sub_url)}">${ICON.copy}</button>
+          <button class="btn btn-sm" data-qr="${esc(data.sub_url)}" data-qr-title="订阅二维码">${ICON.qr}</button>
         </div>
         <div class="hint">客户端只需这一个地址；节点变更后自动同步。</div></div>
 
@@ -894,6 +933,7 @@ async function openLinks(sub) {
         <div class="copy-row">
           <input class="input" id="link-clash" readonly value="${esc(data.clash_url)}">
           <button class="btn btn-sm" data-copy="${esc(data.clash_url)}">${ICON.copy}</button>
+          <button class="btn btn-sm" data-qr="${esc(data.clash_url)}" data-qr-title="Clash 订阅二维码">${ICON.qr}</button>
         </div>
         <div class="hint">需要 mihomo 内核（原版 Clash 不支持 REALITY）。</div></div>
 
@@ -903,8 +943,10 @@ async function openLinks(sub) {
   $('[data-close2]', m.modal).onclick = () => m.close();
 
   m.overlay.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-copy]');
-    if (btn) copyText(btn.dataset.copy);
+    const copyBtn = e.target.closest('[data-copy]');
+    if (copyBtn) { copyText(copyBtn.dataset.copy); return; }
+    const qrBtn = e.target.closest('[data-qr]');
+    if (qrBtn) showQr(qrBtn.dataset.qrTitle || '二维码', qrBtn.dataset.qr);
   });
 }
 
@@ -924,6 +966,16 @@ function bindSubs() {
 
     if (btn.dataset.act === 'links') return openLinks(sub);
     if (btn.dataset.act === 'edit') return openSubModal(sub);
+
+    if (btn.dataset.act === 'reset') {
+      if (!(await confirmDialog('重置流量', `把「${sub.name}」的已用流量清零？只影响统计，不影响连接。`, true))) return;
+      try {
+        await api(`/api/subs/${id}/reset-traffic`, { method: 'POST' });
+        toast('流量已清零');
+        await refresh();
+      } catch (err) { toast(err.message, 'err'); }
+      return;
+    }
 
     if (btn.dataset.act === 'rotate') {
       if (!(await confirmDialog('重置订阅', '旧订阅地址和所有 UUID 会立即失效，已导入的客户端需要重新添加。确定继续？', true))) return;
@@ -1066,6 +1118,44 @@ function bindLogs() {
   if (btn) btn.addEventListener('click', () => route());
 }
 
+/* ------------------------------------------------------------ 审计 */
+
+async function viewAudit() {
+  let data;
+  try {
+    data = await api('/api/audit?limit=300');
+  } catch (err) {
+    return `<div class="notice danger">${esc(err.message)}</div>`;
+  }
+  const items = data.items || [];
+  const rows = items.map((item) => `
+    <tr>
+      <td class="mono" style="white-space:nowrap">${fmtTime(item.at)}</td>
+      <td>${esc(item.actor)}</td>
+      <td><span class="tag tag-off">${esc(item.action)}</span></td>
+      <td>${esc(item.target || '—')}</td>
+      <td class="cell-sub">${esc(item.detail || '')}</td>
+      <td class="mono">${esc(item.ip || '')}</td>
+    </tr>`).join('');
+
+  return `
+    <div class="card">
+      <div class="card-head"><h3>操作审计</h3><div class="spacer"></div>
+        <span class="card-sub">最近 ${items.length} 条 · 自动保留 2000 条</span>
+        <button class="btn btn-sm" id="audit-refresh">${ICON.refresh}<span>刷新</span></button></div>
+      ${rows ? `<div class="table-wrap"><table>
+        <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>详情</th><th>IP</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+        : '<div class="empty"><div class="big">◎</div>还没有操作记录。</div>'}
+      <div class="hint" style="margin-top:12px">登录、节点/订阅变更、应用配置、备份恢复都会记录在这里。</div>
+    </div>`;
+}
+
+function bindAudit() {
+  const btn = $('#audit-refresh');
+  if (btn) btn.addEventListener('click', () => route());
+}
+
 /* ------------------------------------------------------------ 设置 */
 
 function settingsField(key, label, hint = '', type = 'text', placeholder = '') {
@@ -1148,7 +1238,17 @@ function viewSettings() {
 
     <div style="margin-top:16px;display:flex;gap:10px">
       <button class="btn btn-primary" id="save-settings">保存设置</button>
-      <a class="btn" href="/api/export">导出备份</a>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><h3>备份与恢复</h3></div>
+      <div class="hint">备份包含 REALITY 私钥与所有用户 UUID，等同于服务器控制权，请妥善保管。</div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <a class="btn" href="/api/export">${ICON.download}<span>导出备份</span></a>
+        <label class="btn" style="cursor:pointer">${ICON.upload}<span>恢复备份</span>
+          <input type="file" id="import-file" accept="application/json,.json" hidden></label>
+      </div>
+      <div class="hint" style="margin-top:10px">恢复会覆盖当前全部节点、订阅与流量记录，操作前建议先导出一份。</div>
     </div>
 
     <div class="card" style="margin-top:16px">
@@ -1206,6 +1306,41 @@ function bindSettings() {
     e.preventDefault();
     $('#save-password').click();
   });
+
+  const importInput = $('#import-file');
+  if (importInput) {
+    importInput.addEventListener('change', async () => {
+      const file = importInput.files && importInput.files[0];
+      if (!file) return;
+      let data;
+      try {
+        data = JSON.parse(await file.text());
+      } catch {
+        toast('文件不是合法 JSON', 'err');
+        importInput.value = '';
+        return;
+      }
+      const nodes = Array.isArray(data.nodes) ? data.nodes.length : 0;
+      const subs = Array.isArray(data.subs) ? data.subs.length : 0;
+      const ok = await confirmDialog(
+        '恢复备份',
+        `将用备份覆盖当前数据：${nodes} 个节点、${subs} 个订阅，现有配置会被删除且不可撤销。继续？`,
+        true,
+      );
+      if (!ok) {
+        importInput.value = '';
+        return;
+      }
+      try {
+        const result = await api('/api/import', { method: 'POST', body: data });
+        toast(`已恢复 ${result.nodes} 个节点 / ${result.subs} 个订阅，请检查后应用配置`);
+        await refresh();
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+      importInput.value = '';
+    });
+  }
 }
 
 /* ------------------------------------------------------------ 视图表 */
@@ -1216,6 +1351,7 @@ const VIEWS = {
   subs: { title: '订阅用户', sub: '一个订阅可横跨多个节点', html: viewSubs, bind: bindSubs },
   selfsteal: { title: '自偷自向导', sub: 'Xray → PROXY protocol → Nginx → 真实站点', html: viewSelfsteal, bind: bindSelfsteal },
   logs: { title: '运行日志', sub: 'Xray 错误日志尾部', html: viewLogs, bind: bindLogs },
+  audit: { title: '审计日志', sub: '谁在什么时候改了什么', html: viewAudit, bind: bindAudit },
   settings: { title: '设置', sub: '面板、Xray 与 Nginx', html: viewSettings, bind: bindSettings },
 };
 

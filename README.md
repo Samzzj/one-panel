@@ -7,6 +7,8 @@
 **VLESS + REALITY + XHTTP** 两种入站，一个订阅同时下发两种节点，输出
 v2rayN / v2rayNG 的 Base64 订阅和 Clash / mihomo 的 YAML。
 
+[![tests](https://github.com/Samzzj/one-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/Samzzj/one-panel/actions/workflows/ci.yml)
+
 ```
 客户端 (v2rayN / mihomo)
    │  ClientHello: SNI=node.example.com + REALITY 认证数据
@@ -45,12 +47,14 @@ REALITY 的特点是**自己不持有证书**：对没有通过认证的连接�
 
 - **两种传输**：Vision（TCP + XTLS，低延迟）与 XHTTP（HTTP 传输，抗干扰 / 可挂 CDN），共用同一套 REALITY 回落链路
 - **一个订阅多节点**：同一订阅可同时包含 Vision 与 XHTTP，客户端自动列成可选节点
-- **分享链接 / 订阅**：标准 `vless://`、Base64 订阅、Clash(mihomo) YAML
+- **分享链接 / 订阅**：标准 `vless://`、Base64 订阅、Clash(mihomo) YAML；按路径或 UA 自动识别客户端
+- **二维码**：订阅地址一键出码，手机客户端扫码即导入
 - **REALITY 密钥**：内置纯 Python X25519（已用 RFC 7748 官方向量验证），不依赖 xray 二进制
 - **自偷自向导**：选择节点即可生成 Nginx 配置、证书命令、验证步骤
 - **订阅入口复用 443**：Nginx 把 `/sub/` 反代回面板，客户端用同一个域名拉订阅
-- **流量统计**：通过 Xray Stats API 读取每用户上下行，按增量累计
-- **到期 / 额度**：`sweep` 停用过期或超额订阅，安装脚本已配好 systemd timer（每 10 分钟）
+- **流量统计**：Xray Stats API 读取每用户上下行，按增量累计；timer 每 10 分钟自动采样
+- **到期 / 额度**：采样 → 判断 → 停用 → 重载一条龙，不需要人工点
+- **备份与审计**：JSON 导出 / 覆盖恢复，关键操作写入审计日志（自动保留 2000 条）
 - **安全**：PBKDF2 密码、HttpOnly 会话、CSRF、登录限流、CSP、参数化 SQL
 - **零依赖**：Python 3.8+ 标准库；前端原生 JS，无构建步骤
 
@@ -157,6 +161,32 @@ bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-rele
 
 ---
 
+## 和参考项目比，缺什么
+
+这些项目面向不同场景，功能多不等于都需要。本项目只做「单机 + VLESS REALITY + 自己偷自己」，
+下表里打 ✗ 的是**有意不做**，不是漏掉：
+
+| 能力 | 本项目 | 参考项目 | 取舍原因 |
+|---|:---:|---|---|
+| 多服务器 / agent 纳管 | ✗ | Mistgate、Milk、FLYX | 自己偷自己只需一台机器，多节点会引入节点通信与凭据分发 |
+| 多协议（Hysteria2 / Trojan / SS / TUIC…） | ✗ | Mistgate、Zefira、FLYX | 目标就是 REALITY，加协议会让面板与配置复杂度翻倍 |
+| 中转 / 链式代理 / 端口转发 | ✗ | FLYX、SublinkPro | 属于另一类产品 |
+| 机场订阅导入、测速、解锁检测 | ✗ | SublinkPro | 个人面板不需要 |
+| 用户自助页面（浏览器看用量） | ✗ | Zefira、Mistgate | 订阅链接已够用，少一个对外页面 |
+| 设备数限制 / 首连计时 | ✗ | Zefira | 需要连接级追踪，Xray 原生不提供 |
+| Telegram 机器人 / 通知 | ✗ | 多数 | 个人使用没必要 |
+| 多管理员 / API Token | ✗ | Zefira、SublinkPro | 单管理员模型更简单 |
+| Docker 部署 | ✗ | SublinkPro、FLYX | 零依赖直接跑更轻 |
+| 面板内一键升级 | ✗ | Zefira、FLYX | 升级就是替换目录 + 重启，不想让面板改自己的代码 |
+| 二维码 | ✓ | 都有 | 已补 |
+| 操作审计 | ✓ | Zefira、SublinkPro | 已补 |
+| 备份导出 / 恢复 | ✓ | 多数 | 已补 |
+| 流量自动采样 | ✓ | 多数 | 已补（否则额度不会自动生效） |
+
+对照之后补上的还有 GitHub Actions CI、`SECURITY.md`、`CONTRIBUTING.md`。
+
+---
+
 ## 面板结构
 
 ```
@@ -172,12 +202,15 @@ reality-panel/
 │   ├── util.py             # 时间、随机、原子写文件
 │   ├── x25519.py           # RFC 7748 X25519
 │   ├── xray.py             # Xray 配置生成 / 测试 / 重启 / 流量
-│   └── web/                # 前端（index.html / app.js / style.css）
+│   └── web/                # 前端（index.html / app.js / style.css / qrcode.js）
 ├── deploy/
 │   ├── install.sh          # 安装面板 + Xray + systemd + sudoers
 │   ├── selfsteal.sh        # 证书 + Nginx 回落配置
 │   └── nginx-selfsteal.conf.example
 ├── tests/                  # 38 个单元 / 端到端测试
+├── .github/workflows/ci.yml
+├── SECURITY.md
+├── CONTRIBUTING.md
 └── README.md
 ```
 
@@ -192,7 +225,7 @@ reality-panel/
 systemctl status reality-panel
 journalctl -u reality-panel -f
 
-# 过期 / 超额订阅由 timer 每 10 分钟自动处理
+# 过期 / 超额订阅由 timer 每 10 分钟自动处理（先采样流量，再判断）
 systemctl list-timers | grep reality-panel
 
 # 手动清理一次

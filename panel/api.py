@@ -20,7 +20,7 @@ from .links import (
 )
 from .nginx import plan as nginx_plan
 from .nginx import valid_domain, valid_hostport
-from .util import now, rand_hex
+from .util import now, rand_hex, rand_token
 from .xray import new_node_keys
 
 SESSION_TTL = 7 * 86400
@@ -213,6 +213,11 @@ def _need_user(req: Request) -> dict:
     return req.user
 
 
+def _audit(app, req: Request, action: str, target: str = "", detail: str = "", actor: str | None = None) -> None:
+    who = actor or (req.user["username"] if req.user else "anonymous")
+    app.store.audit(action, target, detail, who, req.client_ip)
+
+
 # ---------------------------------------------------------------- 认证
 
 
@@ -233,6 +238,7 @@ def setup(app, req: Request) -> Response:
     uid = app.store.create_user(username, hash_password(password))
     token, csrf = app.store.create_session(uid, req.client_ip)
     user = app.store.user_by_id(uid)
+    _audit(app, req, "初始化面板", username, "", actor=username)
     resp = Response.json({"ok": True, "csrf": csrf, "user": _public_user(user)})
     _set_cookie(resp, token, _secure(req))
     return resp
@@ -251,11 +257,13 @@ def login(app, req: Request) -> Response:
     user = app.store.user_by_name(username)
     if not user or not verify_password(password, user["password_hash"]):
         app.limiter.fail(req.client_ip)
+        _audit(app, req, "登录失败", username, "用户名或密码错误", actor=username)
         raise ApiError(401, "用户名或密码错误")
 
     app.limiter.reset(req.client_ip)
     token, csrf = app.store.create_session(user["id"], req.client_ip)
     app.store.touch_login(user["id"])
+    _audit(app, req, "登录成功", username, "", actor=username)
     resp = Response.json({"ok": True, "csrf": csrf, "user": _public_user(user)})
     _set_cookie(resp, token, _secure(req))
     return resp
@@ -283,9 +291,9 @@ def change_password(app, req: Request) -> Response:
         raise ApiError(400, problem)
     app.store.set_password(user["id"], hash_password(new_password))
     # 让其他会话失效，保留当前
-    keep = req.session["token"] if req.session else ""
     app.store.drop_all_sessions(user["id"])
     token, csrf = app.store.create_session(user["id"], req.client_ip)
+    _audit(app, req, "修改密码")
     resp = Response.json({"ok": True, "csrf": csrf})
     _set_cookie(resp, token, _secure(req))
     return resp
@@ -366,6 +374,7 @@ def create_node(app, req: Request) -> dict:
     payload["public_key"] = public_key
     node = app.store.create_node(payload)
     app.mark_dirty()
+    _audit(app, req, "创建节点", node["name"], f"{node['transport']} :{node['port']}")
     return {"ok": True, "node": node}
 
 
@@ -385,26 +394,31 @@ def update_node(app, req: Request, node_id: str) -> dict:
             payload["xhttp_path"] = "/" + rand_hex(6)
     updated = app.store.update_node(nid, payload)
     app.mark_dirty()
+    _audit(app, req, "修改节点", updated["name"] if updated else str(nid), ", ".join(payload))
     return {"ok": True, "node": updated}
 
 
 def delete_node(app, req: Request, node_id: str) -> dict:
     nid = int(node_id)
-    if not app.store.node(nid):
+    node = app.store.node(nid)
+    if not node:
         raise ApiError(404, "节点不存在")
     app.store.delete_node(nid)
     app.mark_dirty()
+    _audit(app, req, "删除节点", node["name"], f"{node['transport']} :{node['port']}")
     return {"ok": True}
 
 
 def rotate_node_keys(app, req: Request, node_id: str) -> dict:
     nid = int(node_id)
-    if not app.store.node(nid):
+    node = app.store.node(nid)
+    if not node:
         raise ApiError(404, "节点不存在")
     private_key, public_key = new_node_keys()
-    node = app.store.update_node(nid, {"private_key": private_key, "public_key": public_key})
+    updated = app.store.update_node(nid, {"private_key": private_key, "public_key": public_key})
     app.mark_dirty()
-    return {"ok": True, "node": node}
+    _audit(app, req, "更换 REALITY 密钥", node["name"], "")
+    return {"ok": True, "node": updated}
 
 
 # ---------------------------------------------------------------- 订阅用户
@@ -420,6 +434,7 @@ def create_sub(app, req: Request) -> dict:
         raise ApiError(400, "至少选择一个节点")
     sub = app.store.create_sub(payload, node_ids)
     app.mark_dirty()
+    _audit(app, req, "创建订阅", sub["name"], f"{len(node_ids)} 个节点")
     return {"ok": True, "sub": sub}
 
 
@@ -430,15 +445,18 @@ def update_sub(app, req: Request, sub_id: str) -> dict:
     payload = _sub_payload(req.json(), partial=True)
     sub = app.store.update_sub(sid, payload)
     app.mark_dirty()
+    _audit(app, req, "修改订阅", sub["name"] if sub else str(sid), ", ".join(payload))
     return {"ok": True, "sub": sub}
 
 
 def delete_sub(app, req: Request, sub_id: str) -> dict:
     sid = int(sub_id)
-    if not app.store.sub(sid):
+    sub = app.store.sub(sid)
+    if not sub:
         raise ApiError(404, "订阅不存在")
     app.store.delete_sub(sid)
     app.mark_dirty()
+    _audit(app, req, "删除订阅", sub["name"], "")
     return {"ok": True}
 
 
@@ -450,15 +468,28 @@ def set_sub_nodes(app, req: Request, sub_id: str) -> dict:
     known = {n["id"] for n in app.store.nodes()}
     sub = app.store.set_sub_nodes(sid, [n for n in node_ids if n in known])
     app.mark_dirty()
+    _audit(app, req, "调整订阅节点", sub["name"] if sub else str(sid), f"{len(node_ids)} 个节点")
     return {"ok": True, "sub": sub}
 
 
 def rotate_sub(app, req: Request, sub_id: str) -> dict:
     sid = int(sub_id)
-    if not app.store.sub(sid):
+    sub = app.store.sub(sid)
+    if not sub:
         raise ApiError(404, "订阅不存在")
-    sub = app.store.rotate_sub(sid)
-    return {"ok": True, "sub": sub}
+    updated = app.store.rotate_sub(sid)
+    _audit(app, req, "重置订阅", sub["name"], "token 与 UUID 全部更新")
+    return {"ok": True, "sub": updated}
+
+
+def reset_sub_traffic(app, req: Request, sub_id: str) -> dict:
+    sid = int(sub_id)
+    sub = app.store.sub(sid)
+    if not sub:
+        raise ApiError(404, "订阅不存在")
+    app.store.reset_sub_traffic(sid)
+    _audit(app, req, "重置流量", sub["name"], "")
+    return {"ok": True, "sub": app.store.sub(sid)}
 
 
 def sub_links(app, req: Request, sub_id: str) -> dict:
@@ -491,7 +522,12 @@ def subscription(app, req: Request, token: str, clash: str = "") -> Response:
         raise ApiError(403, "订阅已到期")
 
     host = app.store.public_host()
-    want_clash = bool(clash) or (req.query.get("format") == "clash")
+    want_clash = (
+        bool(clash)
+        or req.query.get("format") == "clash"
+        # 部分客户端不认路径，只带 UA；顺手按 UA 自动返回 YAML
+        or any(mark in (req.headers.get("user-agent") or "").lower() for mark in ("clash", "mihomo", "stash"))
+    )
 
     up = sum(int(c.get("up_bytes") or 0) for c in sub["clients"])
     down = sum(int(c.get("down_bytes") or 0) for c in sub["clients"])
@@ -542,6 +578,7 @@ def apply_config(app, req: Request) -> dict:
             ensure_ascii=False,
         ),
     )
+    _audit(app, req, "应用配置", "", "成功" if result.get("ok") else "失败")
     return result
 
 
@@ -607,6 +644,7 @@ def update_settings(app, req: Request) -> dict:
             raise ApiError(400, "订阅域名必须以 http:// 或 https:// 开头")
 
     settings = app.store.save_settings(payload)
+    _audit(app, req, "修改设置", "", ", ".join(sorted(payload)))
     return {"ok": True, "settings": settings}
 
 
@@ -617,15 +655,102 @@ def export_data(app, req: Request) -> Response:
         "exported_at": now(),
         "settings": store.settings(),
         "nodes": store.nodes(),
-        "subs": store.subs(),
+        "subs": [s for s in store.subs()],
         "clients": store.clients(),
     }
     body = json.dumps(payload, ensure_ascii=False, indent=2)
+    _audit(app, req, "导出备份", "", "")
     return Response(
         body=body.encode("utf-8"),
         content_type="application/json; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="reality-panel-backup.json"'},
     )
+
+
+def import_data(app, req: Request) -> dict:
+    """用导出的 JSON 覆盖节点 / 订阅 / 凭据。破坏性操作，前端会二次确认。"""
+    data = req.json()
+    if not isinstance(data.get("nodes"), list) or not isinstance(data.get("subs"), list):
+        raise ApiError(400, "备份格式不正确：缺少 nodes / subs 数组")
+    raw_nodes = data["nodes"]
+    raw_subs = data["subs"]
+    raw_clients = data.get("clients") or []
+    if not isinstance(raw_clients, list):
+        raise ApiError(400, "备份格式不正确：clients 必须是数组")
+    if len(raw_nodes) > 200 or len(raw_subs) > 2000 or len(raw_clients) > 20000:
+        raise ApiError(400, "备份内容超出限制")
+
+    try:
+        nodes: list[dict] = []
+        for raw in raw_nodes:
+            if not isinstance(raw, dict):
+                raise ValueError("节点条目不是对象")
+            payload = _node_payload(raw)
+            payload["private_key"] = str(raw.get("private_key") or "")
+            payload["public_key"] = str(raw.get("public_key") or "")
+            if not payload["private_key"] or not payload["public_key"]:
+                raise ValueError(f"节点「{payload['name']}」缺少 REALITY 密钥")
+            payload["id"] = int(raw.get("id") or 0)
+            payload["created_at"] = int(raw.get("created_at") or 0)
+            nodes.append(payload)
+
+        subs: list[dict] = []
+        used_tokens: set[str] = set()
+        for raw in raw_subs:
+            if not isinstance(raw, dict):
+                raise ValueError("订阅条目不是对象")
+            payload = _sub_payload(raw)
+            token = str(raw.get("token") or "")
+            if not token or token in used_tokens:
+                token = rand_token(24)
+            used_tokens.add(token)
+            payload["token"] = token
+            payload["id"] = int(raw.get("id") or 0)
+            payload["created_at"] = int(raw.get("created_at") or 0)
+            subs.append(payload)
+
+        clients: list[dict] = []
+        for raw in raw_clients:
+            if not isinstance(raw, dict):
+                continue
+            clients.append(
+                {
+                    "sub_id": int(raw.get("sub_id") or 0),
+                    "node_id": int(raw.get("node_id") or 0),
+                    "uuid": str(raw.get("uuid") or ""),
+                    "enabled": bool(raw.get("enabled", True)),
+                    "up_bytes": int(raw.get("up_bytes") or 0),
+                    "down_bytes": int(raw.get("down_bytes") or 0),
+                    "last_seen_at": int(raw.get("last_seen_at") or 0),
+                    "created_at": int(raw.get("created_at") or 0),
+                }
+            )
+    except (TypeError, ValueError) as exc:
+        raise ApiError(400, f"备份内容不合法：{exc}")
+
+    stats = app.store.import_backup({"nodes": nodes, "subs": subs, "clients": clients})
+
+    settings = data.get("settings")
+    if isinstance(settings, dict):
+        clean = {
+            key: str(value)
+            for key, value in settings.items()
+            if key in DEFAULT_SETTINGS and isinstance(value, (str, int, float, bool))
+        }
+        if clean:
+            app.store.save_settings(clean)
+
+    app.mark_dirty()
+    _audit(app, req, "恢复备份", "", f"{stats['nodes']} 节点 / {stats['subs']} 订阅")
+    return {"ok": True, **stats}
+
+
+def audit_list(app, req: Request) -> dict:
+    try:
+        limit = int(req.query.get("limit") or 200)
+    except ValueError:
+        limit = 200
+    return {"ok": True, "items": app.store.audit_log(limit)}
 
 
 # ---------------------------------------------------------------- 路由
@@ -651,6 +776,7 @@ def build_router() -> Router:
     router.add("DELETE", r"/api/subs/(?P<sub_id>\d+)", delete_sub)
     router.add("POST", r"/api/subs/(?P<sub_id>\d+)/nodes", set_sub_nodes)
     router.add("POST", r"/api/subs/(?P<sub_id>\d+)/rotate", rotate_sub)
+    router.add("POST", r"/api/subs/(?P<sub_id>\d+)/reset-traffic", reset_sub_traffic)
     router.add("GET", r"/api/subs/(?P<sub_id>\d+)/links", sub_links)
 
     router.add("POST", r"/api/apply", apply_config)
@@ -661,6 +787,8 @@ def build_router() -> Router:
     router.add("GET", r"/api/selfsteal", selfsteal)
     router.add("POST", r"/api/settings", update_settings)
     router.add("GET", r"/api/export", export_data)
+    router.add("POST", r"/api/import", import_data)
+    router.add("GET", r"/api/audit", audit_list)
 
     router.add(
         "GET",

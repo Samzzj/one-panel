@@ -22,6 +22,7 @@ COOKIE_NAME = "rp_session"
 
 ASSETS = {
     "app.js": "application/javascript; charset=utf-8",
+    "qrcode.js": "application/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
     "favicon.svg": "image/svg+xml",
     "index.html": "text/html; charset=utf-8",

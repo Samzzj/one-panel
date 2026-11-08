@@ -20,9 +20,9 @@ class Client:
         self.cookie = ""
         self.csrf = ""
 
-    def request(self, method: str, path: str, body: dict | None = None, csrf: bool = True):
+    def request(self, method: str, path: str, body: dict | None = None, csrf: bool = True, extra: dict | None = None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=15)
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = dict(extra or {})
         data = None
         if body is not None:
             data = json.dumps(body).encode("utf-8")
@@ -89,6 +89,15 @@ class ApiFlowTest(unittest.TestCase):
         self.assertEqual(icon.status, 200)
         self.assertIn("image/svg+xml", icon.getheader("Content-Type") or "")
         icon.read()
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/assets/qrcode.js")
+        qr_js = conn.getresponse()
+        qr_body = qr_js.read()
+        self.assertEqual(qr_js.status, 200)
+        self.assertIn("javascript", qr_js.getheader("Content-Type") or "")
+        self.assertGreater(len(qr_body), 50000)
         conn.close()
 
         status, body, _ = c.request("POST", "/api/setup", {"username": "admin", "password": "short"})
@@ -244,6 +253,42 @@ class ApiFlowTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(backup["nodes"]), 2)
 
+        # --- UA 自动识别 Clash ---
+        status, yaml_ua, _ = c.request(
+            "GET", f"/sub/{token}", csrf=False, extra={"User-Agent": "clash-verge/v1.7.7"}
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("proxies:", yaml_ua)
+
+        # --- 审计 ---
+        status, audit, _ = c.request("GET", "/api/audit?limit=50")
+        self.assertEqual(status, 200)
+        actions = [item["action"] for item in audit["items"]]
+        self.assertIn("创建节点", actions)
+        self.assertIn("创建订阅", actions)
+        self.assertIn("应用配置", actions)
+        self.assertIn("初始化面板", actions)
+
+        # --- 备份恢复（覆盖式） ---
+        status, imported, _ = c.request("POST", "/api/import", backup)
+        self.assertEqual(status, 200, imported)
+        self.assertEqual(imported["nodes"], 2)
+        self.assertEqual(imported["subs"], 1)
+        status, state_after, _ = c.request("GET", "/api/state")
+        self.assertEqual(len(state_after["nodes"]), 2)
+        self.assertEqual(len(state_after["subs"]), 1)
+        status, _, _ = c.request("GET", f"/sub/{token}", csrf=False)
+        self.assertEqual(status, 200, "恢复后订阅 token 应保持不变")
+
+        status, bad, _ = c.request("POST", "/api/import", {"nodes": "nope", "subs": []})
+        self.assertEqual(status, 400)
+
+        # --- 重置流量 ---
+        new_sub_id = state_after["subs"][0]["id"]
+        status, reset, _ = c.request("POST", f"/api/subs/{new_sub_id}/reset-traffic", {})
+        self.assertEqual(status, 200, reset)
+        self.assertEqual(reset["sub"]["used_bytes"], 0)
+
         # --- 退出 / 登录 ---
         status, _, _ = c.request("POST", "/api/logout", {})
         self.assertEqual(status, 200)
@@ -260,6 +305,9 @@ class ApiFlowTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(state["summary"]["nodes"], 2)
         self.assertEqual(state["summary"]["subs"], 1)
+
+        status, audit2, _ = c.request("GET", "/api/audit?limit=20")
+        self.assertIn("登录成功", [item["action"] for item in audit2["items"]])
 
 
 if __name__ == "__main__":

@@ -124,6 +124,18 @@ CREATE TABLE IF NOT EXISTS stat_marks (
     email TEXT PRIMARY KEY,
     value INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS audit (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    at     INTEGER NOT NULL,
+    actor  TEXT NOT NULL DEFAULT '',
+    ip     TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(at);
 """
 
 
@@ -559,6 +571,97 @@ class Store:
                 "ON CONFLICT(email) DO UPDATE SET value=excluded.value",
                 (email, int(value)),
             )
+
+    # ------------------------------------------------------------ 审计 / 维护
+
+    def audit(self, action: str, target: str = "", detail: str = "", actor: str = "", ip: str = "") -> None:
+        with self.db.cursor() as conn:
+            conn.execute(
+                "INSERT INTO audit(at, actor, ip, action, target, detail) VALUES(?,?,?,?,?,?)",
+                (now(), actor or "system", ip or "", action, target or "", detail or ""),
+            )
+            # 只保留最近 2000 条，避免数据库无限增长
+            conn.execute("DELETE FROM audit WHERE id <= (SELECT MAX(id) FROM audit) - 2000")
+
+    def audit_log(self, limit: int = 200) -> list[dict]:
+        limit = max(1, min(int(limit), 1000))
+        with self.db.cursor() as conn:
+            rows = conn.execute(
+                "SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def reset_sub_traffic(self, sub_id: int) -> None:
+        with self.db.cursor() as conn:
+            ids = [int(r["id"]) for r in conn.execute("SELECT id FROM clients WHERE sub_id=?", (sub_id,))]
+            conn.execute("UPDATE clients SET up_bytes=0, down_bytes=0 WHERE sub_id=?", (sub_id,))
+            for client_id in ids:
+                conn.execute(
+                    "DELETE FROM stat_marks WHERE email IN (?,?)",
+                    (f"c{client_id}:up", f"c{client_id}:down"),
+                )
+
+    def import_backup(self, payload: dict) -> dict:
+        """用备份覆盖节点 / 订阅 / 凭据。返回导入数量。"""
+        nodes = payload.get("nodes") or []
+        subs = payload.get("subs") or []
+        clients = payload.get("clients") or []
+        with self.db.cursor() as conn:
+            conn.execute("DELETE FROM clients")
+            conn.execute("DELETE FROM subs")
+            conn.execute("DELETE FROM nodes")
+            conn.execute("DELETE FROM stat_marks")
+
+            node_map: dict[int, int] = {}
+            for node in nodes:
+                cur = conn.execute(
+                    "INSERT INTO nodes(name, transport, listen, port, sni, dest, xver, private_key,"
+                    " public_key, short_ids, xhttp_path, xhttp_mode, fingerprint, enabled, remark, created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        node["name"], node["transport"], node.get("listen") or "0.0.0.0",
+                        int(node["port"]), node["sni"], node["dest"], int(node.get("xver") or 0),
+                        node["private_key"], node["public_key"],
+                        json.dumps(node.get("short_ids") or [], ensure_ascii=False),
+                        node.get("xhttp_path") or "/", node.get("xhttp_mode") or "auto",
+                        node.get("fingerprint") or "chrome", 1 if node.get("enabled", True) else 0,
+                        node.get("remark") or "", int(node.get("created_at") or now()),
+                    ),
+                )
+                node_map[int(node.get("id") or 0)] = int(cur.lastrowid)
+
+            sub_map: dict[int, int] = {}
+            for sub in subs:
+                cur = conn.execute(
+                    "INSERT INTO subs(name, token, enabled, expires_at, quota_bytes, note, created_at)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (
+                        sub["name"], sub.get("token") or rand_token(24),
+                        1 if sub.get("enabled", True) else 0, int(sub.get("expires_at") or 0),
+                        int(sub.get("quota_bytes") or 0), sub.get("note") or "",
+                        int(sub.get("created_at") or now()),
+                    ),
+                )
+                sub_map[int(sub.get("id") or 0)] = int(cur.lastrowid)
+
+            imported_clients = 0
+            for client in clients:
+                sub_id = sub_map.get(int(client.get("sub_id") or 0))
+                node_id = node_map.get(int(client.get("node_id") or 0))
+                if not sub_id or not node_id:
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO clients(sub_id, node_id, uuid, enabled, up_bytes,"
+                    " down_bytes, last_seen_at, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        sub_id, node_id, client.get("uuid") or new_uuid(),
+                        1 if client.get("enabled", True) else 0,
+                        int(client.get("up_bytes") or 0), int(client.get("down_bytes") or 0),
+                        int(client.get("last_seen_at") or 0), int(client.get("created_at") or now()),
+                    ),
+                )
+                imported_clients += 1
+        return {"nodes": len(node_map), "subs": len(sub_map), "clients": imported_clients}
 
     # ------------------------------------------------------------ 统计
 

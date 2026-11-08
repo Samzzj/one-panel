@@ -78,8 +78,24 @@ CREATE TABLE IF NOT EXISTS sessions (
     ip         TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS servers (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'agent',
+    address      TEXT NOT NULL DEFAULT '',
+    agent_url    TEXT NOT NULL DEFAULT '',
+    token        TEXT NOT NULL DEFAULT '',
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    remark       TEXT NOT NULL DEFAULT '',
+    last_seen_at INTEGER NOT NULL DEFAULT 0,
+    last_status  TEXT NOT NULL DEFAULT '',
+    last_error   TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS nodes (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id    INTEGER NOT NULL DEFAULT 1,
     name         TEXT NOT NULL,
     transport    TEXT NOT NULL DEFAULT 'vision',
     listen       TEXT NOT NULL DEFAULT '0.0.0.0',
@@ -187,7 +203,22 @@ class Database:
     def init(self) -> None:
         with self.cursor() as conn:
             conn.executescript(SCHEMA)
-            conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '2')")
+
+            # v2 -> v3：给老库补 servers / nodes.server_id
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(nodes)")}
+            if "server_id" not in columns:
+                conn.execute("ALTER TABLE nodes ADD COLUMN server_id INTEGER NOT NULL DEFAULT 1")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_server ON nodes(server_id)")
+
+            if conn.execute("SELECT COUNT(*) FROM servers").fetchone()[0] == 0:
+                row = conn.execute("SELECT value FROM meta WHERE key='public_host'").fetchone()
+                address = (row["value"] if row else "") or ""
+                conn.execute(
+                    "INSERT INTO servers(id, name, kind, address, agent_url, token, enabled, created_at)"
+                    " VALUES(1, '本机', 'local', ?, '', '', 1, ?)",
+                    (address, now()),
+                )
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '3')")
 
 
 class Store:
@@ -244,6 +275,82 @@ class Store:
         if self._public_ip is None:
             self._public_ip = detect_public_ip()
         return self._public_ip or "127.0.0.1"
+
+    # ------------------------------------------------------------ 服务器
+
+    @staticmethod
+    def _server(row: sqlite3.Row) -> dict:
+        server = dict(row)
+        server["enabled"] = bool(server.get("enabled"))
+        return server
+
+    def servers(self, only_enabled: bool = False) -> list[dict]:
+        sql = (
+            "SELECT s.*, (SELECT COUNT(*) FROM nodes n WHERE n.server_id=s.id) AS node_count"
+            " FROM servers s"
+        )
+        if only_enabled:
+            sql += " WHERE s.enabled=1"
+        sql += " ORDER BY s.id"
+        with self.db.cursor() as conn:
+            return [self._server(r) for r in conn.execute(sql)]
+
+    def server(self, server_id: int) -> dict | None:
+        with self.db.cursor() as conn:
+            row = conn.execute("SELECT * FROM servers WHERE id=?", (server_id,)).fetchone()
+        return self._server(row) if row else None
+
+    def local_server(self) -> dict | None:
+        with self.db.cursor() as conn:
+            row = conn.execute("SELECT * FROM servers WHERE kind='local' ORDER BY id LIMIT 1").fetchone()
+        return self._server(row) if row else None
+
+    def create_server(self, data: dict) -> dict:
+        with self.db.cursor() as conn:
+            cur = conn.execute(
+                "INSERT INTO servers(name, kind, address, agent_url, token, enabled, remark, created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    data["name"], data.get("kind") or "agent", data.get("address") or "",
+                    data.get("agent_url") or "", data.get("token") or rand_token(24),
+                    1 if data.get("enabled", True) else 0, data.get("remark") or "", now(),
+                ),
+            )
+            server_id = int(cur.lastrowid)
+        server = self.server(server_id)
+        assert server is not None
+        return server
+
+    def update_server(self, server_id: int, data: dict) -> dict | None:
+        fields, values = [], []
+        allowed = {"name", "address", "agent_url", "token", "enabled", "remark"}
+        for key, value in data.items():
+            if key in allowed:
+                fields.append(f"{key}=?")
+                values.append(int(value) if key == "enabled" else value)
+        if not fields:
+            return self.server(server_id)
+        values.append(server_id)
+        with self.db.cursor() as conn:
+            conn.execute(f"UPDATE servers SET {', '.join(fields)} WHERE id=?", values)
+        return self.server(server_id)
+
+    def delete_server(self, server_id: int) -> None:
+        with self.db.cursor() as conn:
+            conn.execute("DELETE FROM nodes WHERE server_id=?", (server_id,))
+            conn.execute("DELETE FROM servers WHERE id=?", (server_id,))
+
+    def touch_server(self, server_id: int, status: str, error: str = "") -> None:
+        with self.db.cursor() as conn:
+            conn.execute(
+                "UPDATE servers SET last_seen_at=?, last_status=?, last_error=? WHERE id=?",
+                (now(), status, error[:500], server_id),
+            )
+
+    def rotate_server_token(self, server_id: int) -> dict | None:
+        with self.db.cursor() as conn:
+            conn.execute("UPDATE servers SET token=? WHERE id=?", (rand_token(24), server_id))
+        return self.server(server_id)
 
     # ------------------------------------------------------------ 用户/会话
 
@@ -318,26 +425,44 @@ class Store:
         node["enabled"] = bool(node.get("enabled"))
         return node
 
-    def nodes(self, only_enabled: bool = False) -> list[dict]:
-        sql = "SELECT * FROM nodes"
+    def nodes(self, only_enabled: bool = False, server_id: int | None = None) -> list[dict]:
+        sql = (
+            "SELECT n.*, s.name AS server_name, s.kind AS server_kind,"
+            " s.address AS server_address FROM nodes n JOIN servers s ON s.id=n.server_id"
+        )
+        clauses: list[str] = []
+        args: list = []
         if only_enabled:
-            sql += " WHERE enabled=1"
-        sql += " ORDER BY id"
+            clauses.append("n.enabled=1")
+        if server_id is not None:
+            clauses.append("n.server_id=?")
+            args.append(server_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY n.id"
         with self.db.cursor() as conn:
-            return [self._node(r) for r in conn.execute(sql)]
+            return [self._node(r) for r in conn.execute(sql, args)]
 
     def node(self, node_id: int) -> dict | None:
         with self.db.cursor() as conn:
-            row = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
+            row = conn.execute(
+                "SELECT n.*, s.name AS server_name, s.kind AS server_kind,"
+                " s.address AS server_address FROM nodes n JOIN servers s ON s.id=n.server_id"
+                " WHERE n.id=?",
+                (node_id,),
+            ).fetchone()
         return self._node(row) if row else None
 
-    def node_by_port(self, port: int, exclude_id: int | None = None) -> dict | None:
+    def node_by_port(self, port: int, server_id: int = 1, exclude_id: int | None = None) -> dict | None:
         with self.db.cursor() as conn:
             if exclude_id is None:
-                row = conn.execute("SELECT * FROM nodes WHERE port=?", (port,)).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM nodes WHERE port=? AND server_id=?", (port, server_id)
+                ).fetchone()
             else:
                 row = conn.execute(
-                    "SELECT * FROM nodes WHERE port=? AND id<>?", (port, exclude_id)
+                    "SELECT * FROM nodes WHERE port=? AND server_id=? AND id<>?",
+                    (port, server_id, exclude_id),
                 ).fetchone()
         return self._node(row) if row else None
 
@@ -345,10 +470,11 @@ class Store:
         short_ids = json.dumps(data.get("short_ids") or [rand_hex(8)], ensure_ascii=False)
         with self.db.cursor() as conn:
             cur = conn.execute(
-                "INSERT INTO nodes(name, transport, listen, port, sni, dest, xver, private_key,"
+                "INSERT INTO nodes(server_id, name, transport, listen, port, sni, dest, xver, private_key,"
                 " public_key, short_ids, xhttp_path, xhttp_mode, fingerprint, enabled, remark, created_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
+                    int(data.get("server_id") or 1),
                     data["name"],
                     data["transport"],
                     data.get("listen") or "0.0.0.0",
@@ -375,7 +501,7 @@ class Store:
     def update_node(self, node_id: int, data: dict) -> dict | None:
         fields, values = [], []
         allowed = {
-            "name", "transport", "listen", "port", "sni", "dest", "xver", "private_key",
+            "server_id", "name", "transport", "listen", "port", "sni", "dest", "xver", "private_key",
             "public_key", "xhttp_path", "xhttp_mode", "fingerprint", "remark", "enabled",
         }
         for key, value in data.items():
@@ -384,7 +510,7 @@ class Store:
                 values.append(json.dumps(value or [], ensure_ascii=False))
             elif key in allowed:
                 fields.append(f"{key}=?")
-                values.append(int(value) if key in ("enabled", "port", "xver") else value)
+                values.append(int(value) if key in ("enabled", "port", "xver", "server_id") else value)
         if not fields:
             return self.node(node_id)
         values.append(node_id)
@@ -514,8 +640,10 @@ class Store:
         sql = (
             "SELECT c.*, n.name AS node_name, n.transport AS node_transport, n.port AS node_port,"
             " n.sni AS node_sni, s.name AS sub_name, s.token AS sub_token,"
-            " s.enabled AS sub_enabled, s.expires_at AS sub_expires_at"
+            " s.enabled AS sub_enabled, s.expires_at AS sub_expires_at,"
+            " sv.name AS server_name, sv.address AS server_address"
             " FROM clients c JOIN nodes n ON n.id=c.node_id JOIN subs s ON s.id=c.sub_id"
+            " JOIN servers sv ON sv.id=n.server_id"
         )
         args: tuple = ()
         if sub_id is not None:
@@ -530,14 +658,15 @@ class Store:
             row = conn.execute(
                 "SELECT c.*, n.name AS node_name, n.transport AS node_transport,"
                 " n.port AS node_port, n.sni AS node_sni, s.name AS sub_name,"
-                " s.token AS sub_token FROM clients c JOIN nodes n ON n.id=c.node_id"
-                " JOIN subs s ON s.id=c.sub_id WHERE c.id=?",
+                " s.token AS sub_token, sv.name AS server_name, sv.address AS server_address"
+                " FROM clients c JOIN nodes n ON n.id=c.node_id"
+                " JOIN subs s ON s.id=c.sub_id JOIN servers sv ON sv.id=n.server_id WHERE c.id=?",
                 (client_id,),
             ).fetchone()
         return self._client(row) if row else None
 
     def sub_by_token(self, token: str) -> dict | None:
-        """订阅链接入口：返回订阅 + 所有可用凭据（含节点）。"""
+        """订阅链接入口：返回订阅 + 所有可用凭据（含节点与服务器）。"""
         with self.db.cursor() as conn:
             row = conn.execute("SELECT * FROM subs WHERE token=?", (token,)).fetchone()
             if not row:
@@ -546,8 +675,10 @@ class Store:
             rows = conn.execute(
                 "SELECT c.*, n.name AS node_name, n.transport, n.listen, n.port, n.sni,"
                 " n.dest, n.xver, n.private_key, n.public_key, n.short_ids, n.xhttp_path,"
-                " n.xhttp_mode, n.fingerprint, n.enabled AS node_enabled"
+                " n.xhttp_mode, n.fingerprint, n.enabled AS node_enabled,"
+                " sv.name AS server_name, sv.address AS server_address, sv.enabled AS server_enabled"
                 " FROM clients c JOIN nodes n ON n.id=c.node_id"
+                " JOIN servers sv ON sv.id=n.server_id"
                 " WHERE c.sub_id=? ORDER BY n.id",
                 (sub["id"],),
             ).fetchall()
@@ -608,24 +739,57 @@ class Store:
                 )
 
     def import_backup(self, payload: dict) -> dict:
-        """用备份覆盖节点 / 订阅 / 凭据。返回导入数量。"""
+        """用备份覆盖服务器 / 节点 / 订阅 / 凭据。返回导入数量。"""
         nodes = payload.get("nodes") or []
         subs = payload.get("subs") or []
         clients = payload.get("clients") or []
+        servers_payload = payload.get("servers") or []
         with self.db.cursor() as conn:
             conn.execute("DELETE FROM clients")
             conn.execute("DELETE FROM subs")
             conn.execute("DELETE FROM nodes")
             conn.execute("DELETE FROM stat_marks")
 
+            local = conn.execute(
+                "SELECT id FROM servers WHERE kind='local' ORDER BY id LIMIT 1"
+            ).fetchone()
+            local_id = int(local["id"]) if local else 1
+            conn.execute("DELETE FROM servers WHERE kind<>'local'")
+
+            server_map: dict[int, int] = {}
+            for server in servers_payload:
+                old_id = int(server.get("id") or 0)
+                if server.get("kind") == "local" or old_id == local_id:
+                    server_map[old_id] = local_id
+                    if server.get("address"):
+                        conn.execute(
+                            "UPDATE servers SET name=?, address=? WHERE id=?",
+                            (server.get("name") or "本机", server["address"], local_id),
+                        )
+                    continue
+                cur = conn.execute(
+                    "INSERT INTO servers(name, kind, address, agent_url, token, enabled, remark,"
+                    " last_seen_at, last_status, last_error, created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        server["name"], "agent", server.get("address") or "",
+                        server.get("agent_url") or "", server.get("token") or rand_token(24),
+                        1 if server.get("enabled", True) else 0, server.get("remark") or "",
+                        int(server.get("last_seen_at") or 0), server.get("last_status") or "",
+                        server.get("last_error") or "", int(server.get("created_at") or now()),
+                    ),
+                )
+                server_map[old_id] = int(cur.lastrowid)
+
             node_map: dict[int, int] = {}
             for node in nodes:
+                server_id = server_map.get(int(node.get("server_id") or 0), local_id)
                 cur = conn.execute(
-                    "INSERT INTO nodes(name, transport, listen, port, sni, dest, xver, private_key,"
-                    " public_key, short_ids, xhttp_path, xhttp_mode, fingerprint, enabled, remark, created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO nodes(server_id, name, transport, listen, port, sni, dest, xver,"
+                    " private_key, public_key, short_ids, xhttp_path, xhttp_mode, fingerprint,"
+                    " enabled, remark, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        node["name"], node["transport"], node.get("listen") or "0.0.0.0",
+                        server_id, node["name"], node["transport"], node.get("listen") or "0.0.0.0",
                         int(node["port"]), node["sni"], node["dest"], int(node.get("xver") or 0),
                         node["private_key"], node["public_key"],
                         json.dumps(node.get("short_ids") or [], ensure_ascii=False),
@@ -667,12 +831,19 @@ class Store:
                     ),
                 )
                 imported_clients += 1
-        return {"nodes": len(node_map), "subs": len(sub_map), "clients": imported_clients}
+        return {
+            "servers": len(server_map),
+            "nodes": len(node_map),
+            "subs": len(sub_map),
+            "clients": imported_clients,
+        }
 
     # ------------------------------------------------------------ 统计
 
     def summary(self) -> dict:
         with self.db.cursor() as conn:
+            servers = conn.execute("SELECT COUNT(*) FROM servers").fetchone()[0]
+            servers_on = conn.execute("SELECT COUNT(*) FROM servers WHERE enabled=1").fetchone()[0]
             nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
             nodes_on = conn.execute("SELECT COUNT(*) FROM nodes WHERE enabled=1").fetchone()[0]
             subs = conn.execute("SELECT COUNT(*) FROM subs").fetchone()[0]
@@ -684,6 +855,8 @@ class Store:
                 (now() + 3 * 86400,),
             ).fetchone()[0]
         return {
+            "servers": int(servers),
+            "servers_enabled": int(servers_on),
             "nodes": int(nodes),
             "nodes_enabled": int(nodes_on),
             "subs": int(subs),

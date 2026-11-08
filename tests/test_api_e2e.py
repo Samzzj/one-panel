@@ -9,7 +9,9 @@ import os
 import shutil
 import threading
 import unittest
+from types import SimpleNamespace
 
+import agent as agent_module
 from app import App
 from panel.httpd import build_server
 
@@ -57,8 +59,29 @@ class ApiFlowTest(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
 
+        # 一个真实的节点 agent，用来测多服务器下发
+        cls.remote_config = os.path.join(cls.data_dir, "remote-xray.json")
+        nginx_dir = os.path.join(cls.data_dir, "nginx")
+        os.makedirs(nginx_dir, exist_ok=True)
+        agent_args = SimpleNamespace(
+            token="remote-agent-token-123",
+            xray_bin="xray",
+            xray_config=cls.remote_config,
+            xray_api="127.0.0.1:10085",
+            restart_cmd="systemctl restart xray",
+            status_cmd="systemctl is-active xray",
+            nginx_dir=nginx_dir,
+        )
+        cls.agent = agent_module.Agent(agent_args)
+        cls.agent_server = agent_module.AgentServer(("127.0.0.1", 0), cls.agent)
+        cls.agent_port = int(cls.agent_server.server_address[1])
+        cls.agent_thread = threading.Thread(target=cls.agent_server.serve_forever, daemon=True)
+        cls.agent_thread.start()
+
     @classmethod
     def tearDownClass(cls) -> None:
+        cls.agent_server.shutdown()
+        cls.agent_server.server_close()
         cls.server.shutdown()
         cls.server.server_close()
         shutil.rmtree(cls.data_dir, ignore_errors=True)
@@ -344,6 +367,68 @@ class ApiFlowTest(unittest.TestCase):
         status, _, _ = c.request("GET", "/api/state", extra={"X-Forwarded-For": "8.8.8.8"})
         self.assertEqual(status, 200, "清空白名单后应恢复")
 
+        # --- 多服务器：添加远程节点并下发 ---
+        status, created, _ = c.request(
+            "POST",
+            "/api/servers",
+            {
+                "name": "远程节点",
+                "address": "198.51.100.7",
+                "agent_url": f"http://127.0.0.1:{self.agent_port}",
+                "token": "remote-agent-token-123",
+            },
+        )
+        self.assertEqual(status, 200, created)
+        remote_id = created["server"]["id"]
+        self.assertTrue(created["token"])
+
+        status, health, _ = c.request("POST", f"/api/servers/{remote_id}/test", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(health["ok"], health)
+        self.assertTrue(health["health"]["ok"])
+
+        status, rnode, _ = c.request(
+            "POST",
+            "/api/nodes",
+            {
+                "name": "远程 Vision",
+                "server_id": remote_id,
+                "transport": "vision",
+                "port": 443,
+                "sni": "node.example.com",
+                "dest": "127.0.0.1:8003",
+                "xver": 1,
+                "short_ids": [],
+            },
+        )
+        self.assertEqual(status, 200, rnode)
+
+        status, rsub, _ = c.request(
+            "POST",
+            "/api/subs",
+            {"name": "远程用户", "node_ids": [rnode["node"]["id"]], "expires_days": 0, "quota_gb": 0},
+        )
+        self.assertEqual(status, 200, rsub)
+        status, rlinks, _ = c.request("GET", f"/api/subs/{rsub['sub']['id']}/links")
+        self.assertEqual(status, 200)
+        self.assertIn("@198.51.100.7:443", rlinks["links"][0])
+
+        status, applied, _ = c.request("POST", "/api/apply", {})
+        self.assertEqual(status, 200, applied)
+        self.assertTrue(applied["ok"], applied)
+        self.assertEqual(len(applied["servers"]), 2, "本机 + 远程都应下发")
+        remote_result = [s for s in applied["servers"] if s["server_id"] == remote_id][0]
+        self.assertTrue(remote_result["ok"], remote_result)
+
+        with open(self.remote_config, "r", encoding="utf-8") as fh:
+            remote_cfg = json.load(fh)
+        ports = {inbound["port"] for inbound in remote_cfg["inbounds"]}
+        self.assertEqual(ports, {10085, 443}, "远程配置不应包含本机 8443 节点")
+
+        status, state_multi, _ = c.request("GET", "/api/state")
+        self.assertEqual(len(state_multi["servers"]), 2)
+        self.assertEqual(state_multi["summary"]["servers"], 2)
+
         # --- 退出 / 登录 ---
         status, _, _ = c.request("POST", "/api/logout", {})
         self.assertEqual(status, 200)
@@ -358,8 +443,8 @@ class ApiFlowTest(unittest.TestCase):
         c.csrf = body["csrf"]
         status, state, _ = c.request("GET", "/api/state")
         self.assertEqual(status, 200)
-        self.assertEqual(state["summary"]["nodes"], 2)
-        self.assertEqual(state["summary"]["subs"], 1)
+        self.assertEqual(state["summary"]["nodes"], 3)
+        self.assertEqual(state["summary"]["subs"], 2)
 
         status, audit2, _ = c.request("GET", "/api/audit?limit=20")
         self.assertIn("登录成功", [item["action"] for item in audit2["items"]])

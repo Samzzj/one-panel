@@ -1,13 +1,30 @@
 # Reality Panel
 
-**零依赖的 VLESS + REALITY 管理面板**，内置「自己偷自己」部署向导。
+**一台主控 + 多台节点**的 VLESS + REALITY 管理面板，内置「自己偷自己」部署向导。
+
+主控面板只装一台；其他机器只需要装一个几十 KB 的单文件 agent（一条命令），
+不用在每台机器上重复部署面板、数据库和前端。
 
 一个 Python 文件起步的后台，不装框架、不装数据库服务、不编译前端：
 `python3 app.py` 就能跑，配置全部写在 SQLite 里。支持 **VLESS + REALITY + Vision** 与
-**VLESS + REALITY + XHTTP** 两种入站，一个订阅同时下发两种节点，输出
+**VLESS + REALITY + XHTTP** 两种入站，一个订阅同时下发多台机器的节点，输出
 v2rayN / v2rayNG 的 Base64 订阅和 Clash / mihomo 的 YAML。
 
 [![tests](https://github.com/Samzzj/one-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/Samzzj/one-panel/actions/workflows/ci.yml)
+
+```
+                  主控面板（只装这一台）
+                  ├─ SQLite / 订阅 / 审计 / 自偷自向导
+                  │
+        ┌─────────┴──────────┐
+        ▼                    ▼
+   本机 Xray :443      agent :8787
+                            │  配置下发 / 流量回收
+                            ▼
+                    香港 / 日本 / 洛杉矶 …
+```
+
+每台服务器的完整链路：
 
 ```
 客户端 (v2rayN / mihomo)
@@ -19,7 +36,7 @@ Xray :443 ── REALITY 校验通过 ──→ VLESS + Vision / XHTTP
    │ PROXY protocol v1
    ▼
 Nginx 127.0.0.1:8003   ← 自有域名证书，本地 TLS
-   ├── /sub/<token>  → 反代面板，提供订阅
+   ├── /sub/<token>  → 反代主控面板，提供订阅
    └── /             → 反代 https://www.lovelive-anime.jp（真实站点内容）
 ```
 
@@ -45,8 +62,9 @@ REALITY 的特点是**自己不持有证书**：对没有通过认证的连接�
 
 ## 功能
 
+- **多服务器**：主控一台，其余机器 agent；配置按服务器生成并分别下发，订阅链接自动指向对应机器
 - **两种传输**：Vision（TCP + XTLS，低延迟）与 XHTTP（HTTP 传输，抗干扰 / 可挂 CDN），共用同一套 REALITY 回落链路
-- **一个订阅多节点**：同一订阅可同时包含 Vision 与 XHTTP，客户端自动列成可选节点
+- **一个订阅多节点**：同一订阅可同时包含不同服务器、不同传输的节点，客户端自动列成可选节点
 - **分享链接 / 订阅**：标准 `vless://`、Base64 订阅、Clash(mihomo) YAML；按路径或 UA 自动识别客户端
 - **二维码**：订阅地址一键出码，手机客户端扫码即导入
 - **REALITY 密钥**：内置纯 Python X25519（已用 RFC 7748 官方向量验证），不依赖 xray 二进制
@@ -95,10 +113,12 @@ ssh -L 8080:127.0.0.1:8080 root@你的服务器
 
 ### 面板里的四步
 
-1. **设置** → 填写 `默认 SNI`（就是 `node.example.com`）、确认 `Xray 配置路径` 与 `面板内网地址`
-2. **节点** → 新建一个 Vision 节点（端口 443）和一个 XHTTP 节点（端口 8443），SNI 都填同一个域名，回落 `127.0.0.1:8003`，PROXY protocol 选 v1
-3. **订阅用户** → 新建订阅，勾选两个节点，设置有效期 / 流量
-4. 右上角 **应用配置** → 面板写入 `config.json`、`xray -test`、重启 Xray
+1. **服务器** → 只有一台「本机」；要加机器就点「添加服务器」，把生成的命令拿到目标机执行，回来点「测试」
+2. **设置** → 填写 `默认 SNI`（就是 `node.example.com`）、确认 `Xray 配置路径` 与 `面板内网地址`
+3. **节点** → 选所属服务器，新建 Vision / XHTTP 节点，SNI 填该机器的域名，回落 `127.0.0.1:8003`，PROXY protocol 选 v1
+4. **订阅用户** → 新建订阅，勾选多台机器的节点，设置有效期 / 流量；最后点右上角 **应用配置**
+
+「应用配置」会同时下发：本机直接写配置重启，远程机器通过 agent 写入并重启，结果按服务器分别显示。
 
 订阅地址形如：
 
@@ -127,6 +147,54 @@ bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-rele
 
 面板默认只监听 `127.0.0.1`，这是有意的：443 被 Xray 占用，面板没有多余端口做公网 HTTPS。
 需要远程访问就用 SSH 隧道，或者用 Cloudflare Tunnel / Tailscale 之类的东西套一层。
+
+---
+
+## 多服务器
+
+### 角色
+
+| 角色 | 装什么 | 做什么 |
+|---|---|---|
+| 主控 | 面板 + 本机 Xray | 存数据、生成配置、下发、收流量、提供订阅 |
+| 节点 | 单文件 agent + Xray | 执行 `apply` / `stats` / `nginx` 三条指令 |
+
+agent 就是仓库根目录的 `agent.py`，标准库单文件，不跑数据库、不带 Web UI。
+
+### 添加一台机器
+
+1. 面板 → 服务器 → 添加服务器，填公网地址（订阅里用）和 `http://IP:8787`
+2. 复制弹窗里的命令，在目标机执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh \
+  | sudo bash -s -- --token <令牌> --with-nginx
+```
+
+3. 回到面板点「测试」，状态变成在线
+4. 到「节点」新建节点时选择这台服务器，再点右上角「应用配置」
+
+### 网络与安全
+
+- agent 监听 `0.0.0.0:8787`，令牌等于那台机器的控制权
+- 强烈建议防火墙只放行主控 IP：
+
+```bash
+ufw allow from <主控IP> to any port 8787 proto tcp
+```
+
+- 主控到 agent 默认走 HTTP；跨公网不放心就把 agent 地址换成内网 / WireGuard / Tailscale 地址
+- 令牌泄露：服务器列表 → 终端图标 → 重置令牌，再用新命令重装
+
+### 每台机器的自偷自
+
+每台节点都要有自己的域名 + 证书 + Nginx：
+
+1. 在目标机签证书（`certbot` / `acme.sh`，同单机流程）
+2. 面板「自偷自向导」选择该节点，核对 SNI 与证书路径
+3. 点「推送到 <服务器>」→ agent 写配置、`nginx -t`、reload
+
+证书还没签就推送会 `nginx -t` 失败，agent 会自动恢复原配置，不会把机器搞挂。
 
 ---
 
@@ -169,7 +237,7 @@ bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-rele
 
 | 能力 | 本项目 | 参考项目 | 取舍原因 |
 |---|:---:|---|---|
-| 多服务器 / agent 纳管 | ✗ | Mistgate、Milk、FLYX | 自己偷自己只需一台机器，多节点会引入节点通信与凭据分发 |
+| 多服务器 / agent 纳管 | ✓ | Mistgate、Milk、FLYX | 已补（单文件 agent） |
 | 多协议（Hysteria2 / Trojan / SS / TUIC…） | ✗ | Mistgate、Zefira、FLYX | 目标就是 REALITY，加协议会让面板与配置复杂度翻倍 |
 | 中转 / 链式代理 / 端口转发 | ✗ | FLYX、SublinkPro | 属于另一类产品 |
 | 机场订阅导入、测速、解锁检测 | ✗ | SublinkPro | 个人面板不需要 |
@@ -193,24 +261,28 @@ bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-rele
 
 ```
 reality-panel/
-├── app.py                  # 入口：HTTP 服务 + CLI（serve / sweep / status）
+├── app.py                  # 入口：HTTP 服务 + CLI（serve / sweep / status / allow）
+├── agent.py                # 节点端 agent（单文件，装在被管理机器上）
 ├── panel/
 │   ├── api.py              # JSON API 与订阅端点
 │   ├── access.py           # IP / CIDR 访问白名单
 │   ├── auth.py             # PBKDF2 密码、登录限流
 │   ├── db.py               # SQLite 建表与数据访问
+│   ├── deployer.py         # 多服务器下发与流量汇总
 │   ├── httpd.py            # 极简路由、静态资源、会话/CSRF
 │   ├── links.py            # vless:// / Base64 / Clash YAML
 │   ├── nginx.py            # 自偷自 Nginx 配置生成
+│   ├── remote.py           # 主控 -> agent 的 HTTP 客户端
 │   ├── util.py             # 时间、随机、原子写文件
 │   ├── x25519.py           # RFC 7748 X25519
 │   ├── xray.py             # Xray 配置生成 / 测试 / 重启 / 流量
 │   └── web/                # 前端（index.html / app.js / style.css / qrcode.js）
 ├── deploy/
 │   ├── install.sh          # 安装面板 + Xray + systemd + sudoers
+│   ├── agent-install.sh    # 在节点机器上安装 agent
 │   ├── selfsteal.sh        # 证书 + Nginx 回落配置
 │   └── nginx-selfsteal.conf.example
-├── tests/                  # 47 个单元 / 端到端测试
+├── tests/                  # 49 个单元 / 端到端测试
 ├── .github/workflows/ci.yml
 ├── SECURITY.md
 ├── CONTRIBUTING.md
@@ -286,6 +358,19 @@ Clash 侧需要较新的 mihomo，老内核会直接忽略该节点。
 
 面板通过 `xray api statsquery` 读取统计。确认 Xray 正在运行、`xray_api` 地址
 （默认 `127.0.0.1:10085`）没被占用，并且配置里的 `policy` 统计项没有被你手动删掉。
+多服务器时还要确认每台 agent 的 `/stats` 能返回数据（服务器页面点「测试」）。
+
+**添加服务器后「测试」失败**
+
+- 目标机 8787 是否放行（云厂商安全组 + 本机防火墙）
+- agent 是否在跑：`systemctl status one-panel-agent`
+- 令牌是否一致；改过就在面板重置令牌，再用新命令重装
+- 主控到目标机是否通：`curl http://节点IP:8787/health`
+
+**应用配置只成功了一部分**
+
+弹窗会按服务器列出 `xray -test` / 重启输出。常见原因是那台机器上的 Xray 版本太旧
+（XHTTP 需要较新版本）、证书 / SNI 配错，或者 agent 掉线。
 
 **把自己锁在白名单外面了**
 
@@ -311,11 +396,12 @@ python3 app.py allow clear --data-dir /var/lib/reality-panel
 
 ```bash
 python3 app.py --port 8080 --data-dir ./data      # 本地跑
-python3 -m unittest discover -s tests -v          # 47 项测试
+python3 -m unittest discover -s tests -v          # 49 项测试
 ```
 
 测试覆盖：X25519 官方向量、链接与订阅编码、Clash YAML、Xray 配置结构、
-Nginx 配置生成与注入防护、密码哈希与限流、完整 API 流程（初始化 / CSRF / 订阅 / 应用配置）。
+Nginx 配置生成与注入防护、密码哈希与限流、完整 API 流程（初始化 / CSRF / 订阅 / 应用配置 /
+备份恢复 / 白名单 / 多服务器下发，测试里会起一个真实 agent 进程）。
 
 没有第三方依赖，所以也不需要 `requirements.txt`。
 

@@ -91,7 +91,7 @@ install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0700 "${DATA_DIR}"
 if [[ "$(readlink -f "${SRC_DIR}")" != "$(readlink -f "${APP_DIR}")" ]]; then
   log "复制程序到 ${APP_DIR}"
   rm -rf "${APP_DIR}/panel" "${APP_DIR}/app.py" "${APP_DIR}/deploy"
-  cp -a "${SRC_DIR}/app.py" "${SRC_DIR}/panel" "${SRC_DIR}/deploy" "${APP_DIR}/"
+  cp -a "${SRC_DIR}/app.py" "${SRC_DIR}/agent.py" "${SRC_DIR}/panel" "${SRC_DIR}/deploy" "${APP_DIR}/"
   [[ -f "${SRC_DIR}/README.md" ]] && cp -a "${SRC_DIR}/README.md" "${APP_DIR}/" || true
   [[ -f "${SRC_DIR}/LICENSE" ]] && cp -a "${SRC_DIR}/LICENSE" "${APP_DIR}/" || true
 fi

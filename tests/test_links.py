@@ -142,6 +142,56 @@ class SubscriptionTest(unittest.TestCase):
         self.assertIn("用户A-HK", unquote(links[0]))
         self.assertIn("type=tcp", links[0])
 
+    def test_server_address_wins(self) -> None:
+        sub = {
+            "name": "用户A",
+            "clients": [
+                {
+                    "uuid": UUID,
+                    "enabled": 1,
+                    "node_enabled": 1,
+                    "server_enabled": 1,
+                    "server_address": "198.51.100.7",
+                    "node_name": "HK",
+                    "transport": "vision",
+                    "port": 443,
+                    "sni": "node.example.com",
+                    "public_key": VISION["public_key"],
+                    "short_ids": '["ab12cd34"]',
+                    "xhttp_path": "/",
+                    "xhttp_mode": "auto",
+                    "fingerprint": "chrome",
+                }
+            ],
+        }
+        links = build_links(sub, "203.0.113.10")
+        self.assertEqual(len(links), 1)
+        self.assertIn("@198.51.100.7:443?", links[0])
+
+    def test_disabled_server_skipped(self) -> None:
+        sub = {
+            "name": "用户A",
+            "clients": [
+                {
+                    "uuid": UUID,
+                    "enabled": 1,
+                    "node_enabled": 1,
+                    "server_enabled": 0,
+                    "server_address": "198.51.100.7",
+                    "node_name": "HK",
+                    "transport": "vision",
+                    "port": 443,
+                    "sni": "node.example.com",
+                    "public_key": VISION["public_key"],
+                    "short_ids": '["ab12cd34"]',
+                    "xhttp_path": "/",
+                    "xhttp_mode": "auto",
+                    "fingerprint": "chrome",
+                }
+            ],
+        }
+        self.assertEqual(build_links(sub, "203.0.113.10"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

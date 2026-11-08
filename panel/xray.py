@@ -208,11 +208,18 @@ class Xray:
 
     # ------------------------------------------------------------ 配置
 
-    def render(self) -> tuple[dict, str]:
-        """按数据库当前状态渲染配置对象与 JSON 文本（不落盘）。"""
+    def render(self, server_id: int | None = None) -> tuple[dict, str]:
+        """按数据库当前状态渲染某台服务器的配置对象与 JSON 文本（不落盘）。"""
         store = self.store
-        nodes = store.nodes(only_enabled=True)
-        clients = [c for c in store.clients() if c.get("enabled") and c.get("sub_enabled", 1)]
+        nodes = store.nodes(only_enabled=True, server_id=server_id)
+        node_ids = {int(node["id"]) for node in nodes}
+        clients = [
+            client
+            for client in store.clients()
+            if client.get("enabled")
+            and client.get("sub_enabled", 1)
+            and int(client["node_id"]) in node_ids
+        ]
         config = build_config(nodes, clients, store.settings())
         return config, json.dumps(config, ensure_ascii=False, indent=2) + "\n"
 
@@ -234,9 +241,9 @@ class Xray:
         output = ((proc.stdout or "") + (proc.stderr or "")).strip()
         return proc.returncode == 0, output[-4000:]
 
-    def apply(self) -> dict:
+    def apply(self, server_id: int = 1) -> dict:
         """渲染 -> 写入 -> 测试 -> 重启。返回给前端展示的结果。"""
-        config, text = self.render()
+        config, text = self.render(server_id)
         settings = self.settings
         path = settings.get("xray_config") or "/usr/local/etc/xray/config.json"
         result: dict[str, Any] = {
@@ -326,8 +333,11 @@ class Xray:
         return result
 
     def collect_stats(self) -> int:
-        """把 Xray 的累计计数换算成增量写进数据库，返回本次更新的客户端数。"""
-        raw = self.stats()
+        """本机：把 Xray 的累计计数换算成增量写进数据库。"""
+        return self.collect_from(self.stats())
+
+    def collect_from(self, raw: dict[str, dict[str, int]]) -> int:
+        """把任意节点的 {email: {up, down}} 计数换算成增量。"""
         updated = 0
         for email, counters in raw.items():
             if not email.startswith("c") or not email[1:].isdigit():

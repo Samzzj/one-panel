@@ -14,6 +14,9 @@ const svg = (inner, size = 17) =>
 const ICON = {
   dash: svg('<rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/>'),
   nodes: svg('<rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/>'),
+  server: svg('<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 16.5h.01M11 6.5h5M11 16.5h5"/>'),
+  terminal: svg('<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>', 15),
+  push: svg('<path d="M12 19V5"/><polyline points="5 12 12 5 19 12"/>', 15),
   users: svg('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>'),
   chain: svg('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'),
   logs: svg('<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>'),
@@ -40,6 +43,8 @@ const LOGO = `<svg class="mark" viewBox="0 0 48 48" width="30" height="30" aria-
   <path d="M24 13.5 33 19v10l-9 5.5-9-5.5V19z" fill="none" stroke="url(#lg)" stroke-width="2" stroke-linejoin="round"/>
   <circle cx="24" cy="24" r="2.4" fill="url(#lg)"/>
 </svg>`;
+
+const AGENT_INSTALL_URL = 'https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh';
 
 /* ------------------------------------------------------------ 状态 */
 
@@ -312,6 +317,7 @@ function renderShell() {
 
         <div class="nav-label">管理</div>
         ${navItem('dashboard', ICON.dash, '概览')}
+        ${navItem('servers', ICON.server, '服务器')}
         ${navItem('nodes', ICON.nodes, '节点')}
         ${navItem('subs', ICON.users, '订阅用户')}
         <div class="nav-label">部署</div>
@@ -431,9 +437,10 @@ async function applyConfig() {
   btn.textContent = '应用中…';
   try {
     const r = await api('/api/apply', { method: 'POST' });
+    const total = (r.servers || []).length;
     if (r.ok) {
       const warn = (r.warnings || []).join('；');
-      toast(warn ? `配置已写入，${warn}` : '配置已应用，Xray 已重启', warn ? 'info' : 'ok', 5000);
+      toast(warn ? `已应用到 ${total} 台服务器，${warn}` : `配置已应用到 ${total} 台服务器`, warn ? 'info' : 'ok', 5000);
     } else {
       showApplyResult(r);
     }
@@ -447,14 +454,29 @@ async function applyConfig() {
 }
 
 function showApplyResult(r) {
-  const blocks = [];
-  if (r.test_output) blocks.push(`<div class="field"><label>配置测试输出</label><pre class="step-cmd" style="margin:0"><code>${esc(r.test_output)}</code></pre></div>`);
-  if (r.restart_output) blocks.push(`<div class="field"><label>重启输出</label><pre class="step-cmd" style="margin:0"><code>${esc(r.restart_output)}</code></pre></div>`);
-  if (r.warnings && r.warnings.length) blocks.push(`<div class="notice warn">${r.warnings.map(esc).join('<br>')}</div>`);
+  const servers = r.servers || [];
+  const failed = servers.filter((item) => !item.ok);
+  const blocks = failed.map((item) => {
+    const parts = [`<div class="notice danger" style="margin-bottom:8px">${esc(item.error || '节点执行失败')}</div>`];
+    if (item.test_output) {
+      parts.push(`<div class="field"><label>配置测试输出</label>
+        <pre class="step-cmd" style="margin:0"><code>${esc(item.test_output)}</code></pre></div>`);
+    }
+    if (item.restart_output) {
+      parts.push(`<div class="field"><label>重启输出</label>
+        <pre class="step-cmd" style="margin:0"><code>${esc(item.restart_output)}</code></pre></div>`);
+    }
+    return `<div class="field"><label>${esc(item.server_name)}${item.server_kind === 'local' ? '（本机）' : ''}</label>
+      ${parts.join('')}</div>`;
+  }).join('');
+
+  const warnings = (r.warnings || []).map((w) => `<div class="notice warn" style="margin-bottom:8px">${esc(w)}</div>`).join('');
+
   const m = openModal({
-    title: '应用失败',
+    title: `应用失败（${failed.length}/${servers.length} 台）`,
     wide: true,
-    body: `<div class="notice danger" style="margin-bottom:14px">配置没有成功生效，请根据下面的输出排查。</div>${blocks.join('') || '<div class="hint">没有更多信息。</div>'}`,
+    body: `<div class="notice danger" style="margin-bottom:14px">有些服务器没有成功应用，下面是对应输出。</div>
+      ${warnings}${blocks || '<div class="hint">没有更多信息。</div>'}`,
     footer: '<button class="btn" data-close2>关闭</button>',
   });
   $('[data-close2]', m.modal).onclick = () => m.close();
@@ -482,7 +504,7 @@ function viewDashboard() {
   const nodeRows = STATE.nodes.slice(0, 6).map((n) => `
     <div class="kv">
       <span>${esc(n.name)} <span class="tag tag-${n.transport}">${n.transport === 'xhttp' ? 'XHTTP' : 'Vision'}</span></span>
-      <span class="mono">:${n.port} · ${esc(n.sni)}</span>
+      <span class="mono">${esc(n.server_name || '本机')} · :${n.port}</span>
     </div>`).join('') || '<div class="empty" style="padding:20px">还没有节点</div>';
 
   return `
@@ -490,7 +512,7 @@ function viewDashboard() {
       <div class="card stat-accent">
         <div class="stat-label">节点</div>
         <div class="stat-value">${s.nodes_enabled}<small> / ${s.nodes}</small></div>
-        <div class="stat-foot">Vision ${vision} · XHTTP ${xhttp}</div>
+        <div class="stat-foot">${s.servers_enabled} / ${s.servers} 台服务器 · Vision ${vision} · XHTTP ${xhttp}</div>
       </div>
       <div class="card stat-cyan">
         <div class="stat-label">订阅用户</div>
@@ -559,6 +581,242 @@ function bindDashboard() {
   if (btn) btn.addEventListener('click', () => openNodeModal(null));
 }
 
+/* ------------------------------------------------------------ 服务器 */
+
+function serverStatusTag(server) {
+  if (server.kind === 'local') {
+    return STATE.xray.service_active
+      ? '<span class="tag tag-on">运行中</span>'
+      : '<span class="tag tag-off">未运行</span>';
+  }
+  if (server.last_status === 'ok') return '<span class="tag tag-on">在线</span>';
+  if (server.last_status === 'error') {
+    return `<span class="tag tag-off" title="${esc(server.last_error || '')}">异常</span>`;
+  }
+  return '<span class="tag tag-off">未检测</span>';
+}
+
+function viewServers() {
+  const rows = STATE.servers.map((s) => `
+    <tr>
+      <td>
+        <div class="cell-title">${esc(s.name)}</div>
+        <div class="cell-sub">${esc(s.remark || (s.kind === 'local' ? '面板所在机器' : '节点机器'))}</div>
+      </td>
+      <td><span class="tag ${s.kind === 'local' ? 'tag-vision' : 'tag-xhttp'}">${s.kind === 'local' ? '本机' : 'Agent'}</span></td>
+      <td class="mono">${esc(s.address || STATE.public_host)}</td>
+      <td class="mono truncate" title="${esc(s.agent_url || '')}">${esc(s.kind === 'local' ? '—' : s.agent_url)}</td>
+      <td>${s.node_count}</td>
+      <td>${serverStatusTag(s)}</td>
+      <td>${s.kind === 'local'
+        ? '<span class="hint">常开</span>'
+        : `<label class="switch"><input type="checkbox" data-toggle="${s.id}" ${s.enabled ? 'checked' : ''}><span></span></label>`}</td>
+      <td class="row-actions">
+        <button class="btn btn-sm" data-act="test" data-id="${s.id}">测试</button>
+        ${s.kind === 'local'
+          ? `<button class="icon-btn" data-act="edit" data-id="${s.id}" title="编辑">${ICON.edit}</button>`
+          : `<button class="icon-btn" data-act="cmd" data-id="${s.id}" title="安装命令 / 重置令牌">${ICON.terminal}</button>
+             <button class="icon-btn" data-act="edit" data-id="${s.id}" title="编辑">${ICON.edit}</button>
+             <button class="icon-btn danger" data-act="del" data-id="${s.id}" title="删除">${ICON.trash}</button>`}
+      </td>
+    </tr>`).join('');
+
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h3>服务器</h3><div class="spacer"></div>
+        <span class="card-sub">主控只装一台，其余机器装 agent</span>
+        <button class="btn btn-primary btn-sm" id="new-server">${ICON.plus}<span>添加服务器</span></button>
+      </div>
+      <div class="table-wrap">
+        <table id="server-table">
+          <thead><tr>
+            <th>名称</th><th>类型</th><th>公网地址</th><th>Agent</th><th>节点</th><th>状态</th><th>启用</th><th></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="hint" style="margin-top:12px">
+        添加服务器时生成的安装命令，是在那台机器上装一个几十 KB 的 agent（不是面板）。
+        装完点「测试」，之后在「应用配置」时主控会把配置推到所有服务器。
+      </div>
+    </div>`;
+}
+
+function openServerModal(server) {
+  const editing = !!server;
+  const isLocal = editing && server.kind === 'local';
+  const s = server || {};
+  const m = openModal({
+    title: editing ? `编辑服务器 · ${s.name}` : '添加服务器',
+    wide: true,
+    body: `<form id="server-form">
+      <div class="field"><label>名称</label>
+        <input class="input" name="name" value="${esc(s.name || '')}" placeholder="香港 02" maxlength="48" required></div>
+
+      <div class="field"><label>公网地址</label>
+        <input class="input" name="address" value="${esc(s.address || '')}" placeholder="1.2.3.4 或 node.example.com" required>
+        <div class="hint">订阅链接里使用的地址。每台服务器可以不同。</div></div>
+
+      ${isLocal ? '' : `
+      <div class="form-row">
+        <div class="field"><label>Agent 地址</label>
+          <input class="input" name="agent_url" value="${esc(s.agent_url || '')}" placeholder="http://1.2.3.4:8787" required></div>
+        <div class="field"><label>Agent 令牌</label>
+          <input class="input" name="token" value="" placeholder="${editing ? '留空则不修改' : '留空自动生成'}"></div>
+      </div>
+      <div class="hint" style="margin-top:-6px;margin-bottom:12px">令牌等同于那台机器的控制权，不要发给别人。建议用防火墙把 8787 只放行面板 IP。</div>`}
+
+      <div class="field"><label>备注</label>
+        <input class="input" name="remark" value="${esc(s.remark || '')}" maxlength="120"></div>
+
+      <label class="check-item"><input type="checkbox" name="enabled" ${s.enabled !== false ? 'checked' : ''}>
+        <span>启用该服务器</span></label>
+    </form>`,
+    footer: `<button class="btn" data-cancel>取消</button>
+      <button class="btn btn-primary" id="server-save">${editing ? '保存' : '添加'}</button>`,
+  });
+
+  const form = $('#server-form', m.modal);
+  $('[data-cancel]', m.modal).onclick = () => m.close();
+  $('#server-save', m.modal).onclick = async () => {
+    if (!form.reportValidity()) return;
+    const fd = new FormData(form);
+    const body = {
+      name: String(fd.get('name') || '').trim(),
+      address: String(fd.get('address') || '').trim(),
+      remark: String(fd.get('remark') || '').trim(),
+      enabled: fd.get('enabled') === 'on',
+    };
+    if (!isLocal) {
+      body.agent_url = String(fd.get('agent_url') || '').trim();
+      const token = String(fd.get('token') || '').trim();
+      if (token) body.token = token;
+    }
+    const btn = $('#server-save', m.modal);
+    btn.disabled = true;
+    try {
+      const result = editing
+        ? await api(`/api/servers/${s.id}`, { method: 'PATCH', body })
+        : await api('/api/servers', { method: 'POST', body });
+      m.close();
+      if (!editing) {
+        toast('服务器已添加');
+        showInstallCommand(result.server, result.token, result.install_url);
+      } else {
+        toast('服务器已更新');
+      }
+      await refresh();
+    } catch (err) {
+      toast(err.message, 'err');
+      btn.disabled = false;
+    }
+  };
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    $('#server-save', m.modal).click();
+  });
+}
+
+function showInstallCommand(server, token, installUrl) {
+  const command = `curl -fsSL ${installUrl} | sudo bash -s -- --token ${token} --with-nginx`;
+  const m = openModal({
+    title: `在「${server.name}」上安装 agent`,
+    wide: true,
+    body: `<div class="notice info" style="margin-bottom:14px">
+        这条命令只安装节点 agent，不是面板。用 SSH 登录到 <b>${esc(server.address)}</b> 执行。
+      </div>
+      <div class="field"><label>安装命令</label>
+        <pre class="step-cmd" style="margin:0"><code>${esc(command)}</code></pre>
+      </div>
+      <div class="field"><label>令牌（只显示这一次，丢失可在列表里重置）</label>
+        <div class="copy-row"><input class="input" readonly value="${esc(token)}">
+          <button class="btn btn-sm" data-copy="${esc(token)}">${ICON.copy}</button></div>
+      </div>
+      <div class="hint">装完回到本页点「测试」；成功后再点右上角「应用配置」。
+        自偷自还需要在那台机器上有域名证书，见「自偷自向导」。</div>`,
+    footer: '<button class="btn" data-close2>关闭</button>',
+  });
+  $('[data-close2]', m.modal).onclick = () => m.close();
+  m.overlay.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-copy]');
+    if (btn) copyText(btn.dataset.copy);
+  });
+}
+
+function bindServers() {
+  const create = $('#new-server');
+  if (create) create.addEventListener('click', () => openServerModal(null));
+
+  const table = $('#server-table');
+  if (!table) return;
+
+  table.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    const server = STATE.servers.find((item) => item.id === id);
+    if (!server) return;
+
+    if (btn.dataset.act === 'edit') return openServerModal(server);
+
+    if (btn.dataset.act === 'test') {
+      btn.disabled = true;
+      try {
+        const result = await api(`/api/servers/${id}/test`, { method: 'POST' });
+        if (result.ok) {
+          toast(server.kind === 'local' ? '本机 Xray 正常' : `${server.name} 连接正常`);
+        } else {
+          const detail = (result.health && (result.health.error || result.health.message)) || '连接失败';
+          toast(`${server.name}：${detail}`, 'err', 5000);
+        }
+        await refresh();
+      } catch (err) {
+        toast(err.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+      return;
+    }
+
+    if (btn.dataset.act === 'cmd') {
+      if (!(await confirmDialog('重置 Agent 令牌', `重置后「${server.name}」上的旧令牌立即失效，需要用新命令重装 agent。继续？`, true))) return;
+      try {
+        const result = await api(`/api/servers/${id}/token`, { method: 'POST' });
+        showInstallCommand(result.server, result.token, AGENT_INSTALL_URL);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+      return;
+    }
+
+    if (btn.dataset.act === 'del') {
+      if (!(await confirmDialog('删除服务器', `确定删除「${server.name}」？它上面的节点和订阅凭据会一起删除。`, true))) return;
+      try {
+        await api(`/api/servers/${id}`, { method: 'DELETE' });
+        toast('服务器已删除');
+        await refresh();
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    }
+  });
+
+  $$('input[data-toggle]', table).forEach((cb) => {
+    cb.addEventListener('change', async () => {
+      const id = Number(cb.dataset.toggle);
+      try {
+        await api(`/api/servers/${id}`, { method: 'PATCH', body: { enabled: cb.checked } });
+        toast(cb.checked ? '服务器已启用' : '服务器已停用');
+        await refresh();
+      } catch (err) {
+        cb.checked = !cb.checked;
+        toast(err.message, 'err');
+      }
+    });
+  });
+}
+
 /* ------------------------------------------------------------ 节点 */
 
 function viewNodes() {
@@ -568,6 +826,7 @@ function viewNodes() {
         <div class="cell-title">${esc(n.name)}</div>
         <div class="cell-sub">${esc(n.remark || n.sni)}</div>
       </td>
+      <td>${esc(n.server_name || '本机')}</td>
       <td><span class="tag tag-${n.transport}">${n.transport === 'xhttp' ? 'XHTTP' : 'Vision'}</span></td>
       <td class="mono">${n.port}</td>
       <td class="mono truncate" title="${esc(n.sni)}">${esc(n.sni)}</td>
@@ -594,7 +853,7 @@ function viewNodes() {
       <div class="table-wrap">
         <table id="node-table">
           <thead><tr>
-            <th>名称</th><th>传输</th><th>端口</th><th>SNI</th><th>回落</th><th>订阅数</th><th>启用</th><th></th>
+            <th>名称</th><th>服务器</th><th>传输</th><th>端口</th><th>SNI</th><th>回落</th><th>订阅数</th><th>启用</th><th></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -662,9 +921,17 @@ function nodeForm(n) {
   const transport = n.transport || 'vision';
   const fingerprint = n.fingerprint || STATE.settings.fingerprint || 'chrome';
   const shortIds = (n.short_ids || []).join(',');
+  const servers = STATE.servers || [];
+  const serverId = Number(n.server_id || (servers[0] && servers[0].id) || 1);
   return `
     <div class="field"><label>节点名称</label>
       <input class="input" name="name" value="${esc(n.name || '')}" placeholder="香港 · Vision" maxlength="48" required></div>
+
+    <div class="field"><label>所属服务器</label>
+      <select class="select" name="server_id">
+        ${servers.map((server) => `<option value="${server.id}" ${server.id === serverId ? 'selected' : ''}>${esc(server.name)} · ${esc(server.address || '本机')}</option>`).join('')}
+      </select>
+      <div class="hint">节点配置会随「应用配置」下发到这台服务器。</div></div>
 
     <div class="form-row">
       <div class="field"><label>传输方式</label>
@@ -745,6 +1012,7 @@ function openNodeModal(node) {
     const fd = new FormData(form);
     const body = {
       name: String(fd.get('name') || '').trim(),
+      server_id: Number(fd.get('server_id')),
       transport: String(fd.get('transport')),
       port: Number(fd.get('port')),
       sni: String(fd.get('sni') || '').trim(),
@@ -1008,6 +1276,7 @@ async function viewSelfsteal() {
   }
 
   const node = STATE.nodes.find((n) => n.id === SS_NODE) || STATE.nodes[0];
+  SS_NODE = node.id;
   const plan = await api(`/api/selfsteal?node_id=${node.id}`);
   const warnings = (plan.warnings || []).map((w) => `<div class="notice warn" style="margin-bottom:8px">${esc(w)}</div>`).join('');
   const steps = plan.steps.map((s) => `
@@ -1057,6 +1326,12 @@ async function viewSelfsteal() {
         : `<div class="code-block"><div class="code-head"><span>reality-selfsteal.conf</span><div class="spacer"></div>
              <span>nginx -t 后再 reload</span></div>
            <pre>${esc(plan.conf)}</pre></div>`}
+      ${plan.server && plan.server.kind !== 'local'
+        ? `<div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+             <button class="btn btn-primary btn-sm" id="ss-push">${ICON.push}<span>推送到 ${esc(plan.server.name)}</span></button>
+             <span class="hint">通过 agent 写入 nginx 并 reload；证书需要先在那台机器上签好。</span>
+           </div>`
+        : `<div class="hint" style="margin-top:12px">本机请按上面的步骤手动写入 ${esc(plan.config_path || '')}。</div>`}
     </div>
 
     <div class="card" style="margin-top:16px">
@@ -1085,6 +1360,30 @@ function bindSelfsteal() {
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     });
   }
+
+  const push = $('#ss-push');
+  if (push) {
+    push.addEventListener('click', async () => {
+      const nodeId = SS_NODE || (STATE.nodes[0] && STATE.nodes[0].id);
+      if (!nodeId) return;
+      push.disabled = true;
+      try {
+        const result = await api('/api/selfsteal/apply', { method: 'POST', body: { node_id: nodeId } });
+        if (result.ok) {
+          toast('Nginx 配置已推送并 reload');
+        } else {
+          const detail = (result.result && (result.result.test_output || result.result.error)) || '推送失败';
+          toast(detail, 'err', 6000);
+        }
+        await refresh();
+      } catch (err) {
+        toast(err.message, 'err');
+      } finally {
+        push.disabled = false;
+      }
+    });
+  }
+
   const host = $('#view');
   host.onclick = (e) => {
     const btn = e.target.closest('[data-copy]');
@@ -1384,7 +1683,7 @@ function bindSettings() {
       }
       try {
         const result = await api('/api/import', { method: 'POST', body: data });
-        toast(`已恢复 ${result.nodes} 个节点 / ${result.subs} 个订阅，请检查后应用配置`);
+        toast(`已恢复 ${result.servers} 台服务器 / ${result.nodes} 个节点 / ${result.subs} 个订阅，请检查后应用配置`);
         await refresh();
       } catch (err) {
         toast(err.message, 'err');
@@ -1398,6 +1697,7 @@ function bindSettings() {
 
 const VIEWS = {
   dashboard: { title: '概览', sub: '节点、订阅与链路状态', html: viewDashboard, bind: bindDashboard },
+  servers: { title: '服务器', sub: '一台主控，多台节点', html: viewServers, bind: bindServers },
   nodes: { title: '节点', sub: 'VLESS + REALITY 入站', html: viewNodes, bind: bindNodes },
   subs: { title: '订阅用户', sub: '一个订阅可横跨多个节点', html: viewSubs, bind: bindSubs },
   selfsteal: { title: '自偷自向导', sub: 'Xray → PROXY protocol → Nginx → 真实站点', html: viewSelfsteal, bind: bindSelfsteal },

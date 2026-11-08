@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import __version__
 from .access import is_allowed, normalize
@@ -21,6 +22,7 @@ from .links import (
 )
 from .nginx import plan as nginx_plan
 from .nginx import valid_domain, valid_hostport
+from .remote import AgentClient
 from .util import now, rand_hex, rand_token
 from .xray import new_node_keys
 
@@ -28,6 +30,7 @@ SESSION_TTL = 7 * 86400
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 SHORT_ID_RE = re.compile(r"^[0-9a-fA-F]{0,16}$")
 XHTTP_PATH_RE = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{0,120}$")
+AGENT_INSTALL_URL = "https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh"
 
 
 # ---------------------------------------------------------------- 工具
@@ -115,6 +118,8 @@ def _short_ids(value: Any) -> list[str]:
 
 def _node_payload(data: dict, *, partial: bool = False) -> dict:
     payload: dict[str, Any] = {}
+    if not partial or "server_id" in data:
+        payload["server_id"] = _number(data, "server_id", "服务器", default=1, minimum=1, maximum=10**9)
     if not partial or "name" in data:
         payload["name"] = _text(data, "name", "节点名称", maxlen=48)
     if not partial or "transport" in data:
@@ -217,6 +222,49 @@ def _need_user(req: Request) -> dict:
 def _audit(app, req: Request, action: str, target: str = "", detail: str = "", actor: str | None = None) -> None:
     who = actor or (req.user["username"] if req.user else "anonymous")
     app.store.audit(action, target, detail, who, req.client_ip)
+
+
+def _public_server(server: dict) -> dict:
+    data = {key: value for key, value in server.items() if key != "token"}
+    data["has_token"] = bool(server.get("token"))
+    return data
+
+
+def _server_payload(data: dict, *, partial: bool = False) -> dict:
+    payload: dict[str, Any] = {}
+    if not partial or "name" in data:
+        payload["name"] = _text(data, "name", "服务器名称", maxlen=48)
+    if not partial or "address" in data:
+        address = _text(data, "address", "公网地址", maxlen=253, default="")
+        if address and ("/" in address or " " in address or "@" in address):
+            raise ApiError(400, "公网地址只填 IP 或域名，不要带协议和路径")
+        payload["address"] = address
+    if not partial or "agent_url" in data:
+        agent_url = _text(data, "agent_url", "Agent 地址", maxlen=200, default="")
+        if agent_url:
+            parsed = urlsplit(agent_url)
+            try:
+                port = parsed.port
+            except ValueError:
+                raise ApiError(400, "Agent 地址端口不合法")
+            if parsed.scheme not in ("http", "https") or not parsed.hostname or not port:
+                raise ApiError(400, "Agent 地址格式应为 http://IP:8787")
+            if parsed.path not in ("", "/") or parsed.query:
+                raise ApiError(400, "Agent 地址不要带路径或参数")
+            agent_url = f"{parsed.scheme}://{parsed.hostname}:{port}"
+        payload["agent_url"] = agent_url
+    if "token" in data:
+        token = _text(data, "token", "Agent 令牌", maxlen=128, default="")
+        if token and len(token) < 16:
+            raise ApiError(400, "Agent 令牌至少 16 位")
+        payload["token"] = token
+    if "enabled" in data:
+        payload["enabled"] = bool(data.get("enabled"))
+    elif not partial:
+        payload["enabled"] = True
+    if not partial or "remark" in data:
+        payload["remark"] = _text(data, "remark", "备注", maxlen=120, default="")
+    return payload
 
 
 # ---------------------------------------------------------------- 认证
@@ -322,6 +370,7 @@ def state(app, req: Request) -> dict:
     user = _need_user(req)
     store = app.store
     settings = store.settings()
+    servers = [_public_server(server) for server in store.servers()]
     nodes = store.nodes()
     subs = store.subs()
     clients = store.clients()
@@ -349,6 +398,7 @@ def state(app, req: Request) -> dict:
         "public_host": store.public_host(),
         "sub_base": _sub_base(app, req),
         "settings": settings,
+        "servers": servers,
         "nodes": nodes,
         "subs": subs,
         "clients": clients,
@@ -369,14 +419,19 @@ def state(app, req: Request) -> dict:
 def create_node(app, req: Request) -> dict:
     data = req.json()
     payload = _node_payload(data)
-    if app.store.node_by_port(payload["port"]):
-        raise ApiError(409, f"端口 {payload['port']} 已被其他节点占用")
+    if not app.store.server(int(payload["server_id"])):
+        raise ApiError(400, "服务器不存在")
+    if app.store.node_by_port(payload["port"], int(payload["server_id"])):
+        raise ApiError(409, f"该服务器上端口 {payload['port']} 已被其他节点占用")
     private_key, public_key = new_node_keys()
     payload["private_key"] = private_key
     payload["public_key"] = public_key
     node = app.store.create_node(payload)
     app.mark_dirty()
-    _audit(app, req, "创建节点", node["name"], f"{node['transport']} :{node['port']}")
+    _audit(
+        app, req, "创建节点", node["name"],
+        f"{node['transport']} :{node['port']} @ {node.get('server_name') or node['server_id']}",
+    )
     return {"ok": True, "node": node}
 
 
@@ -387,10 +442,16 @@ def update_node(app, req: Request, node_id: str) -> dict:
         raise ApiError(404, "节点不存在")
     data = req.json()
     payload = _node_payload(data, partial=True)
-    if "port" in payload:
-        conflict = app.store.node_by_port(payload["port"], exclude_id=nid)
+
+    target_server = int(payload.get("server_id", node["server_id"]))
+    if not app.store.server(target_server):
+        raise ApiError(400, "服务器不存在")
+    if "port" in payload or "server_id" in payload:
+        port = int(payload.get("port", node["port"]))
+        conflict = app.store.node_by_port(port, target_server, exclude_id=nid)
         if conflict:
-            raise ApiError(409, f"端口 {payload['port']} 已被节点「{conflict['name']}」占用")
+            raise ApiError(409, f"该服务器上端口 {port} 已被节点「{conflict['name']}」占用")
+
     if "transport" in payload and payload["transport"] == "xhttp" and "xhttp_path" not in payload:
         if node["xhttp_path"] in ("", "/"):
             payload["xhttp_path"] = "/" + rand_hex(6)
@@ -421,6 +482,81 @@ def rotate_node_keys(app, req: Request, node_id: str) -> dict:
     app.mark_dirty()
     _audit(app, req, "更换 REALITY 密钥", node["name"], "")
     return {"ok": True, "node": updated}
+
+
+# ---------------------------------------------------------------- 服务器
+
+
+def create_server(app, req: Request) -> dict:
+    payload = _server_payload(req.json())
+    if not payload.get("address"):
+        raise ApiError(400, "公网地址必填：订阅链接要用它")
+    if not payload.get("agent_url"):
+        raise ApiError(400, "Agent 地址必填，例如 http://1.2.3.4:8787")
+    server = app.store.create_server(payload)
+    _audit(app, req, "添加服务器", server["name"], server["agent_url"])
+    return {
+        "ok": True,
+        "server": _public_server(server),
+        "token": server["token"],
+        "install_url": AGENT_INSTALL_URL,
+    }
+
+
+def update_server(app, req: Request, server_id: str) -> dict:
+    sid = int(server_id)
+    existing = app.store.server(sid)
+    if not existing:
+        raise ApiError(404, "服务器不存在")
+    payload = _server_payload(req.json(), partial=True)
+    if existing["kind"] == "local":
+        payload.pop("agent_url", None)
+        payload.pop("token", None)
+        if payload.get("enabled") is False:
+            raise ApiError(400, "本机服务器不能停用")
+    updated = app.store.update_server(sid, payload)
+    app.mark_dirty()
+    _audit(app, req, "修改服务器", existing["name"], ", ".join(payload))
+    return {"ok": True, "server": _public_server(updated)}
+
+
+def delete_server(app, req: Request, server_id: str) -> dict:
+    sid = int(server_id)
+    server = app.store.server(sid)
+    if not server:
+        raise ApiError(404, "服务器不存在")
+    if server["kind"] == "local":
+        raise ApiError(400, "本机服务器不能删除")
+    app.store.delete_server(sid)
+    app.mark_dirty()
+    _audit(app, req, "删除服务器", server["name"], server["agent_url"])
+    return {"ok": True}
+
+
+def test_server(app, req: Request, server_id: str) -> dict:
+    sid = int(server_id)
+    server = app.store.server(sid)
+    if not server:
+        raise ApiError(404, "服务器不存在")
+    if server["kind"] == "local":
+        return {"ok": True, "health": app.xray.status(), "local": True}
+    result = AgentClient(server).health()
+    ok = bool(result.get("ok"))
+    app.store.touch_server(sid, "ok" if ok else "error", "" if ok else (result.get("error") or ""))
+    return {"ok": ok, "health": result, "server": _public_server(app.store.server(sid))}
+
+
+def rotate_server_token(app, req: Request, server_id: str) -> dict:
+    sid = int(server_id)
+    server = app.store.server(sid)
+    if not server:
+        raise ApiError(404, "服务器不存在")
+    if server["kind"] == "local":
+        raise ApiError(400, "本机服务器没有 agent 令牌")
+    updated = app.store.rotate_server_token(sid)
+    _audit(app, req, "重置 Agent 令牌", server["name"], "")
+    assert updated is not None
+    return {"ok": True, "token": updated["token"], "server": _public_server(updated)}
 
 
 # ---------------------------------------------------------------- 订阅用户
@@ -564,8 +700,7 @@ def subscription(app, req: Request, token: str, clash: str = "") -> Response:
 
 
 def apply_config(app, req: Request) -> dict:
-    result = app.xray.apply()
-    result.pop("config", None)
+    result = app.deployer.apply_all()
     stamp = now()
     if result.get("ok"):
         app.store.set_meta("dirty", "0")
@@ -580,7 +715,13 @@ def apply_config(app, req: Request) -> dict:
             ensure_ascii=False,
         ),
     )
-    _audit(app, req, "应用配置", "", "成功" if result.get("ok") else "失败")
+    _audit(
+        app,
+        req,
+        "应用配置",
+        "",
+        f"{len(result.get('servers') or [])} 台服务器，" + ("成功" if result.get("ok") else "存在失败"),
+    )
     return result
 
 
@@ -590,7 +731,7 @@ def config_preview(app, req: Request) -> dict:
 
 
 def collect_stats(app, req: Request) -> dict:
-    updated = app.xray.collect_stats()
+    updated = app.deployer.collect_stats()
     return {"ok": True, "updated": updated, "summary": app.store.summary()}
 
 
@@ -621,7 +762,45 @@ def selfsteal(app, req: Request) -> dict:
     if node is None:
         nodes = app.store.nodes()
         node = nodes[0] if nodes else None
-    return nginx_plan(settings, node)
+    result = nginx_plan(settings, node)
+    if node:
+        server = app.store.server(node["server_id"])
+        result["server"] = _public_server(server) if server else None
+        result["node"] = {"id": node["id"], "name": node["name"], "server_id": node["server_id"]}
+    return result
+
+
+def selfsteal_apply(app, req: Request) -> dict:
+    """把向导生成的 Nginx 配置推送到节点服务器（仅远程 agent）。"""
+    data = req.json()
+    try:
+        node_id = int(data.get("node_id"))
+    except (TypeError, ValueError):
+        raise ApiError(400, "缺少 node_id")
+    node = app.store.node(node_id)
+    if not node:
+        raise ApiError(404, "节点不存在")
+    server = app.store.server(node["server_id"])
+    if not server:
+        raise ApiError(404, "服务器不存在")
+    if server["kind"] == "local":
+        raise ApiError(
+            400,
+            "本机 Nginx 请按向导手动写入（面板没有 nginx 写权限）；这个按钮用于远程服务器",
+        )
+    settings = app.store.settings()
+    plan = nginx_plan(settings, node)
+    if not plan.get("ok"):
+        raise ApiError(400, plan.get("error") or "配置生成失败")
+    result = app.deployer.push_nginx(server, plan["conf"], settings.get("nginx_conf") or "/etc/nginx/conf.d/reality-selfsteal.conf")
+    _audit(
+        app,
+        req,
+        "推送 Nginx 配置",
+        f"{server['name']} / {node['name']}",
+        "成功" if result.get("ok") else "失败",
+    )
+    return {"ok": bool(result.get("ok")), "result": result, "server": _public_server(server)}
 
 
 def update_settings(app, req: Request) -> dict:
@@ -677,6 +856,7 @@ def export_data(app, req: Request) -> Response:
         "version": __version__,
         "exported_at": now(),
         "settings": store.settings(),
+        "servers": store.servers(),
         "nodes": store.nodes(),
         "subs": [s for s in store.subs()],
         "clients": store.clients(),
@@ -698,12 +878,41 @@ def import_data(app, req: Request) -> dict:
     raw_nodes = data["nodes"]
     raw_subs = data["subs"]
     raw_clients = data.get("clients") or []
+    raw_servers = data.get("servers") or []
     if not isinstance(raw_clients, list):
         raise ApiError(400, "备份格式不正确：clients 必须是数组")
-    if len(raw_nodes) > 200 or len(raw_subs) > 2000 or len(raw_clients) > 20000:
+    if not isinstance(raw_servers, list):
+        raise ApiError(400, "备份格式不正确：servers 必须是数组")
+    if len(raw_nodes) > 200 or len(raw_subs) > 2000 or len(raw_clients) > 20000 or len(raw_servers) > 100:
         raise ApiError(400, "备份内容超出限制")
 
     try:
+        servers: list[dict] = []
+        for raw in raw_servers:
+            if not isinstance(raw, dict):
+                raise ValueError("服务器条目不是对象")
+            if raw.get("kind") == "local":
+                servers.append(
+                    {
+                        "id": int(raw.get("id") or 0),
+                        "kind": "local",
+                        "name": str(raw.get("name") or "本机"),
+                        "address": str(raw.get("address") or ""),
+                    }
+                )
+                continue
+            item = _server_payload(raw)
+            if not item.get("address") or not item.get("agent_url"):
+                raise ValueError(f"服务器「{item.get('name')}」缺少公网地址或 Agent 地址")
+            item["kind"] = "agent"
+            item["id"] = int(raw.get("id") or 0)
+            item["token"] = str(raw.get("token") or "") or rand_token(24)
+            item["created_at"] = int(raw.get("created_at") or 0)
+            item["last_seen_at"] = int(raw.get("last_seen_at") or 0)
+            item["last_status"] = str(raw.get("last_status") or "")
+            item["last_error"] = str(raw.get("last_error") or "")
+            servers.append(item)
+
         nodes: list[dict] = []
         for raw in raw_nodes:
             if not isinstance(raw, dict):
@@ -751,7 +960,9 @@ def import_data(app, req: Request) -> dict:
     except (TypeError, ValueError) as exc:
         raise ApiError(400, f"备份内容不合法：{exc}")
 
-    stats = app.store.import_backup({"nodes": nodes, "subs": subs, "clients": clients})
+    stats = app.store.import_backup(
+        {"servers": servers, "nodes": nodes, "subs": subs, "clients": clients}
+    )
 
     settings = data.get("settings")
     if isinstance(settings, dict):
@@ -764,7 +975,7 @@ def import_data(app, req: Request) -> dict:
             app.store.save_settings(clean)
 
     app.mark_dirty()
-    _audit(app, req, "恢复备份", "", f"{stats['nodes']} 节点 / {stats['subs']} 订阅")
+    _audit(app, req, "恢复备份", "", f"{stats['servers']} 服务器 / {stats['nodes']} 节点 / {stats['subs']} 订阅")
     return {"ok": True, **stats}
 
 
@@ -794,6 +1005,12 @@ def build_router() -> Router:
     router.add("DELETE", r"/api/nodes/(?P<node_id>\d+)", delete_node)
     router.add("POST", r"/api/nodes/(?P<node_id>\d+)/keys", rotate_node_keys)
 
+    router.add("POST", r"/api/servers", create_server)
+    router.add("PATCH", r"/api/servers/(?P<server_id>\d+)", update_server)
+    router.add("DELETE", r"/api/servers/(?P<server_id>\d+)", delete_server)
+    router.add("POST", r"/api/servers/(?P<server_id>\d+)/test", test_server)
+    router.add("POST", r"/api/servers/(?P<server_id>\d+)/token", rotate_server_token)
+
     router.add("POST", r"/api/subs", create_sub)
     router.add("PATCH", r"/api/subs/(?P<sub_id>\d+)", update_sub)
     router.add("DELETE", r"/api/subs/(?P<sub_id>\d+)", delete_sub)
@@ -808,6 +1025,7 @@ def build_router() -> Router:
     router.add("POST", r"/api/sweep", sweep_subs)
     router.add("GET", r"/api/logs", logs)
     router.add("GET", r"/api/selfsteal", selfsteal)
+    router.add("POST", r"/api/selfsteal/apply", selfsteal_apply)
     router.add("POST", r"/api/settings", update_settings)
     router.add("GET", r"/api/export", export_data)
     router.add("POST", r"/api/import", import_data)

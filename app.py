@@ -28,6 +28,7 @@ from panel.access import is_allowed, normalize
 from panel.api import build_router
 from panel.auth import LoginLimiter
 from panel.db import Database, Store
+from panel.deployer import Deployer
 from panel.httpd import build_server, serve_forever
 from panel.util import now
 from panel.xray import Xray
@@ -45,6 +46,7 @@ class App:
         self.db.init()
         self.store = Store(self.db)
         self.xray = Xray(self.store)
+        self.deployer = Deployer(self.store, self.xray)
         self.limiter = LoginLimiter()
         self.router = build_router()
         self.started_at = now()
@@ -137,13 +139,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "sweep":
         # 先采样流量，否则额度判断用的还是上一次的旧数据
-        app.xray.collect_stats()
+        app.deployer.collect_stats()
         changed = app.store.sweep()
         if changed:
             app.mark_dirty()
         # 有改动，或上次应用失败留下了 dirty 标记，都重新应用一次
         if app.store.meta("dirty", "0") == "1":
-            result = app.xray.apply()
+            result = app.deployer.apply_all()
+            if result.get("ok"):
+                app.store.set_meta("dirty", "0")
             print(json.dumps({"changed": changed, "applied": result.get("ok")}, ensure_ascii=False))
         else:
             print(json.dumps({"changed": False, "applied": False}, ensure_ascii=False))

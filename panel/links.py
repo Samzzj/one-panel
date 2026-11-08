@@ -206,10 +206,16 @@ def subscription_payload(links: list[str]) -> str:
 
 
 def build_links(sub: dict, host: str) -> list[str]:
-    """按 sub_by_token() 的结果生成全部节点链接。"""
+    """按 sub_by_token() 的结果生成全部节点链接。
+
+    每台服务器用自己的公网地址（server_address），所以多机订阅里
+    同一个用户在不同机器上的链接会自动指向对应机器。
+    """
     links: list[str] = []
     for client in sub.get("clients", []):
         if not client.get("node_enabled") or not client.get("enabled"):
+            continue
+        if client.get("server_enabled") is not None and not client.get("server_enabled"):
             continue
         node = {
             "transport": client.get("transport"),
@@ -222,7 +228,8 @@ def build_links(sub: dict, host: str) -> list[str]:
             "fingerprint": client.get("fingerprint"),
         }
         remark = f"{sub['name']}-{client.get('node_name')}"
-        links.append(vless_link(node, client["uuid"], remark, host))
+        node_host = (client.get("server_address") or "").strip() or host
+        links.append(vless_link(node, client["uuid"], remark, node_host))
     return links
 
 
@@ -230,6 +237,8 @@ def build_clash_proxies(sub: dict, host: str) -> list[dict]:
     proxies: list[dict] = []
     for client in sub.get("clients", []):
         if not client.get("node_enabled") or not client.get("enabled"):
+            continue
+        if client.get("server_enabled") is not None and not client.get("server_enabled"):
             continue
         node = {
             "transport": client.get("transport"),
@@ -241,5 +250,6 @@ def build_clash_proxies(sub: dict, host: str) -> list[dict]:
             "xhttp_mode": client.get("xhttp_mode"),
             "fingerprint": client.get("fingerprint"),
         }
-        proxies.append(clash_proxy(node, client["uuid"], f"{sub['name']}-{client.get('node_name')}", host))
+        node_host = (client.get("server_address") or "").strip() or host
+        proxies.append(clash_proxy(node, client["uuid"], f"{sub['name']}-{client.get('node_name')}", node_host))
     return proxies

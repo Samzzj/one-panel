@@ -29,3 +29,13 @@
 - 订阅地址等同于密码，泄露后请用「重置订阅」轮换 token 与 UUID
 - 不要把 `/sub/` 暴露给不可信网络之外的人；它是无鉴权的 bearer 链接
 - 定期导出备份，但备份同样是敏感文件
+
+## 节点 agent
+
+- `agent.py` 的令牌等同于那台机器的控制权（可写 Xray / Nginx 配置并重启服务），
+  不要写进公开仓库、截图或聊天记录
+- agent 默认监听 `0.0.0.0:8787` 且是明文 HTTP，**必须**用防火墙只放行主控 IP，
+  或把 agent 放在 WireGuard / Tailscale / 内网里
+- 怀疑令牌泄露：面板 → 服务器 → 重置令牌，然后用新命令重装 agent
+- agent 以 root 运行（要 restart xray/nginx）；systemd 单元已加 `ProtectSystem=strict`
+  与最小 `ReadWritePaths`，但仍应把节点视为可被主控完全控制的机器

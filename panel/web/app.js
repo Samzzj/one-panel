@@ -760,8 +760,13 @@ function showInstallCommand(server, token, installUrl) {
     body: `<div class="notice info" style="margin-bottom:14px">
         这条命令只安装节点 agent，不是面板。用 SSH 登录到 <b>${esc(server.address)}</b> 执行。
       </div>
-      <div class="field"><label>安装命令</label>
-        <pre class="step-cmd" style="margin:0"><code>${esc(command)}</code></pre>
+      <div class="field"><label>安装命令（在目标服务器上执行）</label>
+        <div class="code-block">
+          <div class="code-head"><span>root@${esc(server.address)}</span><div class="spacer"></div>
+            <button class="btn btn-sm" data-copy="${esc(command)}">${ICON.copy}<span>复制</span></button>
+          </div>
+          <pre class="wrap">${esc(command)}</pre>
+        </div>
       </div>
       <div class="field"><label>令牌（只显示这一次，丢失可在列表里重置）</label>
         <div class="copy-row"><input class="input" readonly value="${esc(token)}">

@@ -54,6 +54,8 @@ let CSRF = '';
 let STATE = null;
 let BOOTSTRAP = { setup_required: false, panel_name: 'Reality Panel', version: '' };
 let SS_NODE = null;
+let autoApplyPoll = null;
+let autoApplyTries = 0;
 
 /* ------------------------------------------------------------ 主题 */
 
@@ -468,6 +470,42 @@ async function refresh() {
   CSRF = STATE.csrf;
   updateTopbar();
   await route();
+  if (STATE.dirty && STATE.settings.auto_apply !== '0') {
+    autoApplyTries = 0;
+    if (!autoApplyPoll) autoApplyPoll = setTimeout(pollAutoApply, 2000);
+  }
+}
+
+async function pollAutoApply() {
+  autoApplyPoll = null;
+  try {
+    const wasDirty = !!STATE.dirty;
+    const st = await api('/api/state');
+    STATE = st;
+    CSRF = st.csrf;
+    updateTopbar();
+    if (st.settings.auto_apply === '0') {
+      await route();
+      return;
+    }
+    if (wasDirty && !st.dirty) {
+      toast('配置已自动应用');
+      await route();
+      return;
+    }
+    if (st.dirty) {
+      autoApplyTries += 1;
+      if (autoApplyTries < 15) {
+        autoApplyPoll = setTimeout(pollAutoApply, 2000);
+      } else {
+        await route();
+      }
+    } else {
+      await route();
+    }
+  } catch (err) {
+    // 网络抖动时停止轮询，下次操作会重新触发
+  }
 }
 
 async function loadState() {
@@ -1702,6 +1740,16 @@ function viewSettings() {
             ${STATE.meta.fingerprints.map((f) => `<option value="${f}" ${f === s.fingerprint ? 'selected' : ''}>${f}</option>`).join('')}
           </select></div>
       </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><h3>自动化</h3></div>
+      <label class="check-item">
+        <input type="checkbox" name="auto_apply" data-setting ${s.auto_apply !== '0' ? 'checked' : ''}>
+        <span>修改节点 / 订阅 / 服务器后自动应用配置</span>
+      </label>
+      <div class="hint">变更后约 2 秒自动下发并重启 Xray，已连接用户会短暂断线。
+        关闭后需要手动点右上角「应用配置」。</div>
     </div>
 
     <div class="card" style="margin-top:16px">

@@ -759,21 +759,7 @@ def subscription(app, req: Request, token: str, clash: str = "") -> Response:
 
 
 def apply_config(app, req: Request) -> dict:
-    result = app.deployer.apply_all()
-    stamp = now()
-    if result.get("ok"):
-        app.store.set_meta("dirty", "0")
-    app.store.set_meta(
-        "last_apply",
-        json.dumps(
-            {
-                "at": stamp,
-                "ok": bool(result.get("ok")),
-                "warnings": result.get("warnings") or [],
-            },
-            ensure_ascii=False,
-        ),
-    )
+    result = app.apply_now()
     _audit(
         app,
         req,
@@ -883,7 +869,7 @@ def update_settings(app, req: Request) -> dict:
         if not payload["sub_base"].startswith(("http://", "https://")):
             raise ApiError(400, "订阅域名必须以 http:// 或 https:// 开头")
 
-    for key in ("access_allowlist_loopback", "access_allowlist_sub"):
+    for key in ("access_allowlist_loopback", "access_allowlist_sub", "auto_apply"):
         if key in payload:
             payload[key] = "1" if payload[key].lower() in ("1", "true", "on", "yes") else "0"
 
@@ -905,6 +891,8 @@ def update_settings(app, req: Request) -> dict:
                 )
 
     settings = app.store.save_settings(payload)
+    if payload.get("auto_apply") == "1" and app.store.meta("dirty", "0") == "1":
+        app.schedule_apply()
     _audit(app, req, "修改设置", "", ", ".join(sorted(payload)))
     return {"ok": True, "settings": settings}
 

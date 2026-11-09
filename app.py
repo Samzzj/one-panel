@@ -21,6 +21,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 from panel import __version__
@@ -35,7 +36,9 @@ from panel.xray import Xray
 
 
 class App:
-    def __init__(self, data_dir: str | Path):
+    AUTO_APPLY_DELAY = 2.0
+
+    def __init__(self, data_dir: str | Path, auto_apply: bool = True):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -51,13 +54,90 @@ class App:
         self.router = build_router()
         self.started_at = now()
         self._log_lock = threading.Lock()
+        self._auto_enabled = bool(auto_apply)
+        self._apply_lock = threading.Lock()
+        self._auto_lock = threading.Lock()
+        self._auto_pending = False
+        self._auto_last_change = 0.0
+        self._auto_thread: threading.Thread | None = None
         if self.store.meta("dirty", "") == "":
             self.store.set_meta("dirty", "0")
+        if (
+            self._auto_enabled
+            and self.store.meta("dirty", "0") == "1"
+            and self.store.setting("auto_apply", "1") == "1"
+        ):
+            self.schedule_apply()
 
     # ------------------------------------------------------------ 状态
 
     def mark_dirty(self, dirty: bool = True) -> None:
         self.store.set_meta("dirty", "1" if dirty else "0")
+        if dirty:
+            self.schedule_apply()
+
+    def apply_now(self) -> dict:
+        """串行执行一次下发，并记录 last_apply / dirty。"""
+        with self._apply_lock:
+            result = self.deployer.apply_all()
+        if result.get("ok"):
+            self.store.set_meta("dirty", "0")
+        self.store.set_meta(
+            "last_apply",
+            json.dumps(
+                {
+                    "at": now(),
+                    "ok": bool(result.get("ok")),
+                    "warnings": result.get("warnings") or [],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        return result
+
+    def schedule_apply(self) -> None:
+        """变更后防抖 2 秒自动下发；多次修改会合并成一次。"""
+        if not self._auto_enabled:
+            return
+        if self.store.setting("auto_apply", "1") != "1":
+            return
+        with self._auto_lock:
+            self._auto_pending = True
+            self._auto_last_change = time.time()
+            if self._auto_thread is not None and self._auto_thread.is_alive():
+                return
+            self._auto_thread = threading.Thread(
+                target=self._auto_loop, name="auto-apply", daemon=True
+            )
+            self._auto_thread.start()
+
+    def _auto_loop(self) -> None:
+        while True:
+            time.sleep(0.5)
+            with self._auto_lock:
+                if not self._auto_pending:
+                    return
+                if time.time() - self._auto_last_change < self.AUTO_APPLY_DELAY:
+                    continue
+                self._auto_pending = False
+            if self.store.setting("auto_apply", "1") != "1":
+                return
+            try:
+                result = self.apply_now()
+                ok = bool(result.get("ok"))
+                self.store.audit(
+                    "自动应用配置", "", "成功" if ok else "存在失败", "system"
+                )
+                print(
+                    f"[panel] 自动应用配置: {'成功' if ok else '失败'}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except Exception:
+                traceback.print_exc()
+            with self._auto_lock:
+                if not self._auto_pending:
+                    return
 
     def setup_required(self) -> bool:
         return self.store.user_count() == 0
@@ -118,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    app = App(args.data_dir)
+    app = App(args.data_dir, auto_apply=(args.command == "serve"))
 
     if args.command == "allow":
         if not args.value:
@@ -145,9 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             app.mark_dirty()
         # 有改动，或上次应用失败留下了 dirty 标记，都重新应用一次
         if app.store.meta("dirty", "0") == "1":
-            result = app.deployer.apply_all()
-            if result.get("ok"):
-                app.store.set_meta("dirty", "0")
+            result = app.apply_now()
             print(json.dumps({"changed": changed, "applied": result.get("ok")}, ensure_ascii=False))
         else:
             print(json.dumps({"changed": False, "applied": False}, ensure_ascii=False))

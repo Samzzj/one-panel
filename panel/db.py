@@ -47,6 +47,8 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # 订阅
     "sub_base": "",
     "sub_interval_hours": "12",
+    # 修改后自动下发配置（会重启 Xray）
+    "auto_apply": "1",
     # 访问白名单（空 = 不限制）
     "access_allowlist": "",
     # 始终允许 127.0.0.1 / ::1（SSH 隧道、本机 nginx 需要）

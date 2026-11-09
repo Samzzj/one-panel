@@ -53,7 +53,7 @@ class ApiFlowTest(unittest.TestCase):
         cls.data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".test-data")
         shutil.rmtree(cls.data_dir, ignore_errors=True)
         os.makedirs(cls.data_dir, exist_ok=True)
-        cls.app = App(cls.data_dir)
+        cls.app = App(cls.data_dir, auto_apply=False)
         cls.server = build_server("127.0.0.1", 0, cls.app)
         cls.port = int(cls.server.server_address[1])
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)

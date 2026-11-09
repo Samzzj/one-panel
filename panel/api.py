@@ -426,8 +426,15 @@ def create_node(app, req: Request) -> dict:
     payload = _node_payload(data)
     if not app.store.server(int(payload["server_id"])):
         raise ApiError(400, "服务器不存在")
-    if app.store.node_by_port(payload["port"], int(payload["server_id"])):
-        raise ApiError(409, f"该服务器上端口 {payload['port']} 已被其他节点占用")
+    conflict = app.store.node_by_port(payload["port"], int(payload["server_id"]))
+    if conflict:
+        server = app.store.server(int(payload["server_id"]))
+        server_name = server["name"] if server else f"#{payload['server_id']}"
+        raise ApiError(
+            409,
+            f"服务器「{server_name}」上端口 {payload['port']} 已被节点"
+            f"「{conflict['name']}」占用；请换端口，或先删除旧节点",
+        )
     private_key, public_key = new_node_keys()
     payload["private_key"] = private_key
     payload["public_key"] = public_key
@@ -455,7 +462,12 @@ def update_node(app, req: Request, node_id: str) -> dict:
         port = int(payload.get("port", node["port"]))
         conflict = app.store.node_by_port(port, target_server, exclude_id=nid)
         if conflict:
-            raise ApiError(409, f"该服务器上端口 {port} 已被节点「{conflict['name']}」占用")
+            server = app.store.server(target_server)
+            server_name = server["name"] if server else f"#{target_server}"
+            raise ApiError(
+                409,
+                f"服务器「{server_name}」上端口 {port} 已被节点「{conflict['name']}」占用",
+            )
 
     if "transport" in payload and payload["transport"] == "xhttp" and "xhttp_path" not in payload:
         if node["xhttp_path"] in ("", "/"):

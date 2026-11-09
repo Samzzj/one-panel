@@ -67,9 +67,38 @@ fi
 # ------------------------------------------------------------ Xray
 if [[ "${INSTALL_XRAY}" -eq 1 ]] && ! command -v xray >/dev/null 2>&1; then
   log "安装 Xray-core"
-  bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install || \
-    warn "Xray 安装失败，可稍后手动安装"
+  for attempt in 1 2 3; do
+    script="$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh || true)"
+    if [[ -n "${script}" ]] && bash -c "${script}" @ install; then
+      break
+    fi
+    warn "Xray 安装失败（第 ${attempt}/3 次，常见原因是 GitHub 504），10 秒后重试"
+    sleep 10
+  done
+  command -v xray >/dev/null 2>&1 || warn "Xray 仍未安装成功，可稍后手动运行官方安装脚本"
 fi
+
+# 新版 Xray 安装脚本不一定会生成 config.json；没有配置服务会直接启动失败
+if command -v xray >/dev/null 2>&1 && [[ ! -f "${XRAY_CONFIG}" ]]; then
+  log "生成最小 Xray 配置（面板下发后会覆盖）"
+  install -d -m 0775 "$(dirname "${XRAY_CONFIG}")"
+  cat > "${XRAY_CONFIG}" <<'EOF'
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 1080,
+      "protocol": "socks",
+      "settings": { "auth": "noauth", "udp": false }
+    }
+  ],
+  "outbounds": [ { "protocol": "freedom" } ]
+}
+EOF
+  chmod 644 "${XRAY_CONFIG}"
+fi
+
 systemctl enable --now xray 2>/dev/null || warn "无法启动 xray 服务"
 
 if [[ "${WITH_NGINX}" -eq 1 ]] && ! command -v nginx >/dev/null 2>&1; then

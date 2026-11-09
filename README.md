@@ -274,6 +274,7 @@ systemctl stop unattended-upgrades
 ### `443 已被占用`
 
 这是面板数据库里的端口冲突：**同一台服务器**一个端口只能有一个节点。
+报错会直接写出是哪台服务器的哪个节点占用。
 
 - 新建时确认「所属服务器」选对了
 - 节点列表里看哪台服务器已有 443 节点，删掉或换端口
@@ -301,9 +302,21 @@ systemctl daemon-reload && systemctl restart one-panel-agent
 
 `Hook 'deploy-hook' ran with error output: nginx.service is not active` 是正常的，签证书时 nginx 被临时停掉了。
 
+### 安装 Xray 时 GitHub 返回 504
+
+GitHub Release 的 `.dgst` 校验文件偶尔会 504。agent 安装脚本现在会自动重试 3 次；
+仍然失败就重跑一次 agent 安装命令，或手动执行官方安装脚本：
+
+```bash
+bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+```
+
 ### `xray` 启动失败，提示找不到 `config.json`
 
-面板第一次「应用配置」之前 Xray 可能没有配置。先在面板建节点，等自动应用完成，再检查：
+新版 Xray 安装脚本不一定会生成配置。v0.6.1 起 agent 安装时会自动写一份最小配置，
+面板「应用配置」后再覆盖成正式配置。
+
+如果仍遇到，先建节点让面板下发，再检查：
 
 ```bash
 systemctl status xray --no-pager

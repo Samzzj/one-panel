@@ -271,7 +271,8 @@ class Xray:
                 return result
 
         try:
-            atomic_write(path, text, 0o640)
+            # Xray 官方 systemd 服务以 nobody 运行，配置必须对其他用户可读
+            atomic_write(path, text, 0o644)
             result["written"] = True
         except OSError as exc:
             result["ok"] = False

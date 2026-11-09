@@ -389,6 +389,16 @@ Clash 侧需要较新的 mihomo，老内核会直接忽略该节点。
 弹窗会按服务器列出 `xray -test` / 重启输出。常见原因是那台机器上的 Xray 版本太旧
 （XHTTP 需要较新版本）、证书 / SNI 配错，或者 agent 掉线。
 
+**xray 服务 failed、443 没监听**
+
+Xray 官方 systemd 服务以 `nobody` 运行，配置文件必须对其他用户可读（0644）。
+v0.4.2 起面板会自动写成 0644；旧版本执行：
+
+```bash
+chmod 644 /usr/local/etc/xray/config.json
+systemctl restart xray
+```
+
 **把自己锁在白名单外面了**
 
 在服务器上执行：

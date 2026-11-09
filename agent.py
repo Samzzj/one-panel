@@ -136,7 +136,8 @@ class Agent:
             return result
 
         try:
-            atomic_write(self.xray_config, text, 0o640)
+            # Xray 官方 systemd 服务以 nobody 运行，配置必须对其他用户可读
+            atomic_write(self.xray_config, text, 0o644)
         except OSError as exc:
             result["warnings"].append(f"写入 {self.xray_config} 失败：{exc}")
             return result

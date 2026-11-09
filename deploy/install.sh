@@ -70,18 +70,18 @@ else
   log "安装缺失的系统依赖"
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq || warn "apt-get update 未完成（常见原因是 unattended-upgrades 占用锁），继续"
-    if ! apt-get install -y -qq python3 curl ca-certificates openssl nginx sudo >/dev/null; then
-      warn "apt 被其他进程占用，10 秒后重试一次"
+    apt-get -o Acquire::ForceIPv4=true update -qq || warn "apt-get update 未完成（常见原因是 unattended-upgrades 占用锁），继续"
+    if ! timeout 240 apt-get -o Acquire::ForceIPv4=true install -y -qq python3 curl ca-certificates openssl nginx sudo >/dev/null; then
+      warn "apt 被其他进程占用或超时，10 秒后重试一次"
       sleep 10
-      apt-get install -y -qq python3 curl ca-certificates openssl nginx sudo >/dev/null || \
+      timeout 240 apt-get -o Acquire::ForceIPv4=true install -y -qq python3 curl ca-certificates openssl nginx sudo >/dev/null || \
         warn "依赖安装未完成；如果面板能正常启动可以忽略"
     fi
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
+    timeout 240 dnf --setopt=ip_resolve=4 install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
       warn "依赖安装未完成；如果面板能正常启动可以忽略"
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
+    timeout 240 yum install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
       warn "依赖安装未完成；如果面板能正常启动可以忽略"
   else
     warn "未识别的包管理器，请自行确保 python3 >= 3.8 与 sudo 已安装"
@@ -118,7 +118,7 @@ if [[ "${INSTALL_XRAY}" -eq 1 ]]; then
     log "已安装 Xray: $(xray version 2>/dev/null | head -n1)"
   else
     log "安装 Xray-core（官方脚本）"
-    if bash -c "$(curl -4 -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install; then
+    if bash -c "$(curl -4 -fsSL --connect-timeout 10 --max-time 60 https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install; then
       log "Xray 安装完成"
     else
       warn "Xray 安装失败，可稍后手动安装；面板仍可启动并生成配置"

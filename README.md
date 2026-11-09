@@ -212,7 +212,7 @@ https://lisa.example.com/sub/xxxxxxxx
 保存后复制弹窗里的安装命令，在**第二台**执行：
 
 ```bash
-curl -4 -fsSL https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh \
+curl -4 -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh \
   | sudo bash -s -- --token <令牌> --with-nginx
 ```
 
@@ -227,6 +227,47 @@ agent 会自动签 `ay.example.com` 的证书、写 Nginx、reload；弹窗会�
 节点 → 新建，所属服务器选第二台，SNI 会自动填 `ay.example.com`，端口 `443`，dest `127.0.0.1:8003`，xver v1。
 
 保存后自动下发，订阅里会同时出现两台机器的节点。
+
+### 5. 给别人用：离线安装包
+
+正常一条命令需要从 GitHub 下载 Xray。有些机器访问 `raw.githubusercontent.com` 或 GitHub Releases 会 TLS 中断、504，安装就会卡住或失败。
+
+这时不要在节点上跟 GitHub 较劲，直接在面板服务器打一个离线包：
+
+```bash
+cd ~/one-panel
+sudo bash deploy/make-agent-kit.sh
+```
+
+会生成：
+
+```
+dist/one-panel-agent-kit-x86_64.tar.gz
+```
+
+把它复制到节点：
+
+```bash
+scp dist/one-panel-agent-kit-x86_64.tar.gz root@节点IP:/tmp/
+```
+
+在节点上安装：
+
+```bash
+tar xzf /tmp/one-panel-agent-kit-x86_64.tar.gz -C /root
+sudo bash /root/one-panel-agent-kit/deploy/agent-install.sh \
+  --token <面板生成的令牌> \
+  --with-nginx \
+  --xray-binary /root/one-panel-agent-kit/xray/xray
+```
+
+这个包里有 `agent.py`、安装脚本和 Xray 二进制，安装过程完全不需要访问 GitHub。
+
+注意：
+
+- 包里的 Xray 是**打包机器的架构**（一般是 x86_64）；节点架构不同就不能直接用
+- 也可以把 tar.gz 放到你自己的对象存储/网站，给别人的命令改成先下载 tar.gz 再解压
+- 安装器也支持 `--xray-binary`（本地二进制或 zip）和 `--xray-url`（自定义 zip 地址），适合自己搭镜像
 
 ---
 
@@ -310,7 +351,8 @@ systemctl daemon-reload && systemctl restart one-panel-agent
 ### 安装 Xray 时 GitHub 返回 504
 
 GitHub Release 的 `.dgst` 校验文件偶尔会 504。agent 安装脚本现在会自动重试 3 次；
-仍然失败就重跑一次 agent 安装命令，或手动执行官方安装脚本：
+仍然失败就重跑一次 agent 安装命令，或者用离线包（见「给别人用：离线安装包」），
+也可以手动执行官方安装脚本：
 
 ```bash
 bash -c "$(curl -4 -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
@@ -408,7 +450,7 @@ app.py                    面板入口
 agent.py                  节点 agent
 panel/                    面板代码
   web/                    前端
-deploy/                   安装 / 证书 / 面板 HTTPS 脚本
+deploy/                   安装 / 证书 / 面板 HTTPS / 离线包脚本
 tests/                    50 项单元与端到端测试
 ```
 

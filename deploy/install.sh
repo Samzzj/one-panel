@@ -175,7 +175,27 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now "${SERVICE_NAME}"
+systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1 || true
+# enable --now 对已在运行的服务不会重启，必须显式 restart 才能加载新代码
+systemctl restart "${SERVICE_NAME}" || warn "面板重启失败"
+sleep 1
+
+if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
+  warn "面板没有启动成功，请执行：systemctl status ${SERVICE_NAME} --no-pager"
+else
+  RUN_VERSION=""
+  for _ in 1 2 3 4 5; do
+    RUN_VERSION="$(curl -s --max-time 3 "http://127.0.0.1:${PANEL_PORT}/api/bootstrap" 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
+    [[ -n "${RUN_VERSION}" ]] && break
+    sleep 1
+  done
+  if [[ -n "${RUN_VERSION}" ]]; then
+    log "面板已重启，运行版本 ${RUN_VERSION}"
+  else
+    warn "面板进程已启动，但读取运行版本失败；请检查 127.0.0.1:${PANEL_PORT}"
+  fi
+fi
 
 # 每 10 分钟检查一次过期 / 超额订阅；有变化才重启 Xray
 cat >"/etc/systemd/system/${SERVICE_NAME}-sweep.service" <<EOF

@@ -170,8 +170,11 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now one-panel-agent
+systemctl enable one-panel-agent >/dev/null 2>&1 || true
+# 重装时服务可能已在运行，enable --now 不会重启，必须显式 restart
+systemctl restart one-panel-agent
 sleep 1
+systemctl is-active --quiet one-panel-agent || warn "agent 没有启动成功，请执行：systemctl status one-panel-agent --no-pager"
 
 if systemctl is-active --quiet one-panel-agent; then
   log "Agent 已启动，监听 ${BIND}:${PORT}"

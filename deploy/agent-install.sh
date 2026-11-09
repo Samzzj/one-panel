@@ -134,7 +134,7 @@ RestartSec=3
 
 ProtectSystem=strict
 PrivateTmp=true
-ReadWritePaths=${APP_DIR} ${NGINX_DIR} $(dirname "${XRAY_CONFIG}") /var/lib/nginx /var/log/xray /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
+ReadWritePaths=${APP_DIR} ${NGINX_DIR} $(dirname "${XRAY_CONFIG}") /var/lib/nginx /var/log/nginx /var/log/xray /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /run
 
 [Install]
 WantedBy=multi-user.target

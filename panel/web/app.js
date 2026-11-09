@@ -30,6 +30,8 @@ const ICON = {
   reset: svg('<path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/>', 14),
   audit: svg('<path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/>'),
   upload: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>', 15),
+  sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>', 17),
+  moon: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>', 17),
   refresh: svg('<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>', 15),
   download: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>', 15),
   arrow: svg('<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>', 14),
@@ -52,6 +54,31 @@ let CSRF = '';
 let STATE = null;
 let BOOTSTRAP = { setup_required: false, panel_name: 'Reality Panel', version: '' };
 let SS_NODE = null;
+
+/* ------------------------------------------------------------ 主题 */
+
+function currentTheme() {
+  return document.documentElement && document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('rp-theme', theme); } catch (err) { /* ignore */ }
+  const btn = $('#btn-theme');
+  if (btn) {
+    btn.innerHTML = theme === 'light' ? ICON.moon : ICON.sun;
+    btn.title = theme === 'light' ? '切换到深色' : '切换到浅色';
+  }
+}
+
+function bindThemeButton() {
+  const btn = $('#btn-theme');
+  if (!btn) return;
+  const theme = currentTheme();
+  btn.innerHTML = theme === 'light' ? ICON.moon : ICON.sun;
+  btn.title = theme === 'light' ? '切换到深色' : '切换到浅色';
+  btn.onclick = () => setTheme(currentTheme() === 'light' ? 'dark' : 'light');
+}
 
 /* ------------------------------------------------------------ 工具 */
 
@@ -223,6 +250,7 @@ function renderAuth(mode) {
   const app = $('#app');
   app.innerHTML = `
     <div class="auth-wrap">
+      <button class="icon-btn auth-theme" id="btn-theme" title="切换明暗">${ICON.sun}</button>
       <form class="auth-card" id="auth-form" autocomplete="on">
         <div class="auth-brand">${LOGO}
           <div>
@@ -293,6 +321,8 @@ function renderAuth(mode) {
       btn.textContent = setup ? '创建并进入面板' : '登录';
     }
   });
+
+  bindThemeButton();
 }
 
 /* ------------------------------------------------------------ 外壳 */
@@ -338,14 +368,17 @@ function renderShell() {
 
       <main class="main">
         <header class="topbar">
-          <div>
-            <h2 id="page-title">概览</h2>
-            <div class="sub" id="page-sub"></div>
+          <div class="topbar-inner">
+            <div>
+              <h2 id="page-title">概览</h2>
+              <div class="sub" id="page-sub"></div>
+            </div>
+            <div class="spacer"></div>
+            <span class="dirty-pill hidden" id="dirty-pill">● 有未应用的更改</span>
+            <button class="icon-btn" id="btn-theme" title="切换明暗">${ICON.sun}</button>
+            <button class="btn btn-sm" id="btn-collect">${ICON.refresh}<span>同步流量</span></button>
+            <button class="btn btn-primary btn-sm" id="btn-apply">应用配置</button>
           </div>
-          <div class="spacer"></div>
-          <span class="dirty-pill hidden" id="dirty-pill">● 有未应用的更改</span>
-          <button class="btn btn-sm" id="btn-collect">${ICON.refresh}<span>同步流量</span></button>
-          <button class="btn btn-primary btn-sm" id="btn-apply">应用配置</button>
         </header>
         <div class="view" id="view"></div>
       </main>
@@ -373,6 +406,7 @@ function renderShell() {
     }
   });
   $('#dirty-pill').addEventListener('click', applyConfig);
+  bindThemeButton();
 }
 
 function updateTopbar() {

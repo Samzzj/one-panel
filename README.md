@@ -109,6 +109,22 @@ ssh -L 8080:127.0.0.1:8080 root@你的服务器
 # 浏览器访问 http://127.0.0.1:8080
 ```
 
+### 不想用 SSH 隧道：直接浏览器打开
+
+面板自带一个可选的 HTTPS 入口，用你已有的证书监听 9443，浏览器直接登录：
+
+```bash
+sudo bash deploy/panel-https.sh lisa.7111117.xyz
+# 浏览器打开 https://lisa.7111117.xyz:9443
+```
+
+前提是该域名证书已签好（`selfsteal.sh` 或 `certbot`），并且云安全组 / 防火墙放行 TCP 9443。
+443 仍然归 Xray REALITY，两者互不影响。想撤掉这个入口：
+
+```bash
+sudo bash deploy/panel-https.sh --remove
+```
+
 首次打开会要求创建管理员账号（至少 10 位密码）。
 
 ### 面板里的四步
@@ -280,6 +296,7 @@ reality-panel/
 ├── deploy/
 │   ├── install.sh          # 安装面板 + Xray + systemd + sudoers
 │   ├── agent-install.sh    # 在节点机器上安装 agent
+│   ├── panel-https.sh      # 给面板加公网 HTTPS 入口（不用隧道）
 │   ├── selfsteal.sh        # 证书 + Nginx 回落配置
 │   └── nginx-selfsteal.conf.example
 ├── tests/                  # 49 个单元 / 端到端测试

@@ -216,6 +216,10 @@ cat <<EOF
    ssh -L ${PANEL_PORT}:127.0.0.1:${PANEL_PORT} root@${IP}
  然后浏览器访问 http://127.0.0.1:${PANEL_PORT}
 
+ 不想用隧道？给面板加一个 HTTPS 入口（需要域名证书）：
+   sudo bash ${APP_DIR}/deploy/panel-https.sh 你的域名
+   然后浏览器打开 https://你的域名:9443
+
  接下来：
    1. 打开面板，创建管理员账号
    2. 在「设置」填写域名、Xray 配置路径等

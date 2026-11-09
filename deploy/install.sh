@@ -59,19 +59,33 @@ if [[ "${UNINSTALL}" -eq 1 ]]; then
 fi
 
 # ------------------------------------------------------------ 包管理
-if command -v apt-get >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq || warn "apt-get update 失败，继续尝试"
-  apt-get install -y -qq python3 curl ca-certificates openssl nginx sudo >/dev/null || \
-    warn "部分依赖安装失败，请检查网络"
-elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
-    warn "部分依赖安装失败，请检查网络"
-elif command -v yum >/dev/null 2>&1; then
-  yum install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
-    warn "部分依赖安装失败，请检查网络"
+missing=0
+for cmd in python3 curl nginx sudo openssl; do
+  command -v "${cmd}" >/dev/null 2>&1 || missing=1
+done
+
+if [[ "${missing}" -eq 0 ]]; then
+  log "依赖已齐全，跳过 apt/dnf"
 else
-  warn "未识别的包管理器，请自行确保 python3 >= 3.8 与 sudo 已安装"
+  log "安装缺失的系统依赖"
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq || warn "apt-get update 未完成（常见原因是 unattended-upgrades 占用锁），继续"
+    if ! apt-get install -y -qq python3 curl ca-certificates openssl nginx sudo >/dev/null; then
+      warn "apt 被其他进程占用，10 秒后重试一次"
+      sleep 10
+      apt-get install -y -qq python3 curl ca-certificates openssl nginx sudo >/dev/null || \
+        warn "依赖安装未完成；如果面板能正常启动可以忽略"
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
+      warn "依赖安装未完成；如果面板能正常启动可以忽略"
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
+      warn "依赖安装未完成；如果面板能正常启动可以忽略"
+  else
+    warn "未识别的包管理器，请自行确保 python3 >= 3.8 与 sudo 已安装"
+  fi
 fi
 
 command -v python3 >/dev/null 2>&1 || die "缺少 python3"

@@ -118,7 +118,7 @@ if [[ "${INSTALL_XRAY}" -eq 1 ]]; then
     log "已安装 Xray: $(xray version 2>/dev/null | head -n1)"
   else
     log "安装 Xray-core（官方脚本）"
-    if bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install; then
+    if bash -c "$(curl -4 -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install; then
       log "Xray 安装完成"
     else
       warn "Xray 安装失败，可稍后手动安装；面板仍可启动并生成配置"
@@ -217,7 +217,7 @@ else
   warn "面板启动失败，请查看：journalctl -u ${SERVICE_NAME} -n 50 --no-pager"
 fi
 
-IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+IP="$(curl -4 -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
 cat <<EOF
 
 ============================================================

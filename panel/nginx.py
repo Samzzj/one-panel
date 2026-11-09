@@ -202,7 +202,7 @@ def plan(settings: dict[str, str], node: dict | None = None) -> dict:
             "title": "2. 申请证书",
             "detail": "推荐 acme.sh 的 DNS-01，80 端口被封也能签；也可以 certbot standalone。",
             "command": (
-                f"curl https://get.acme.sh | sh -s email=you@example.com\n"
+                f"curl -4 https://get.acme.sh | sh -s email=you@example.com\n"
                 f"~/.acme.sh/acme.sh --issue --standalone -d {sni or 'node.example.com'}\n"
                 f"~/.acme.sh/acme.sh --install-cert -d {sni or 'node.example.com'} "
                 f"--key-file /etc/letsencrypt/live/{sni or 'node.example.com'}/privkey.pem "
@@ -231,7 +231,7 @@ def plan(settings: dict[str, str], node: dict | None = None) -> dict:
             "title": "6. 验证",
             "detail": "用浏览器直接访问 443 应该看到真实站点内容；"
             "再用客户端导入订阅测试连通。",
-            "command": f"curl -vk --resolve {sni or 'node.example.com'}:443:127.0.0.1 https://{sni or 'node.example.com'}/ -o /dev/null",
+            "command": f"curl -4 -vk --resolve {sni or 'node.example.com'}:443:127.0.0.1 https://{sni or 'node.example.com'}/ -o /dev/null",
         },
     ]
 

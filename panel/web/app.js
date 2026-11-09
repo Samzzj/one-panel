@@ -885,7 +885,7 @@ function openServerModal(server) {
 }
 
 function showInstallCommand(server, token, installUrl) {
-  const command = `curl -fsSL ${installUrl} | sudo bash -s -- --token ${token} --with-nginx`;
+  const command = `curl -4 -fsSL ${installUrl} | sudo bash -s -- --token ${token} --with-nginx`;
   const m = openModal({
     title: `在「${server.name}」上安装 agent`,
     wide: true,

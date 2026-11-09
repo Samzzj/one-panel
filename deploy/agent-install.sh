@@ -4,7 +4,7 @@
 #
 # 在【被管理的服务器】上执行（不是面板那台）：
 #
-#   curl -fsSL https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh \
+#   curl -4 -fsSL https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh \
 #     | sudo bash -s -- --token <面板生成的令牌>
 #
 # 可选参数：
@@ -68,7 +68,7 @@ fi
 if [[ "${INSTALL_XRAY}" -eq 1 ]] && ! command -v xray >/dev/null 2>&1; then
   log "安装 Xray-core"
   for attempt in 1 2 3; do
-    script="$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh || true)"
+    script="$(curl -4 -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh || true)"
     if [[ -n "${script}" ]] && bash -c "${script}" @ install; then
       break
     fi
@@ -129,7 +129,7 @@ install -d -m 0755 /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
 # ------------------------------------------------------------ 下载 agent
 log "下载 agent.py"
 TMP_AGENT="$(mktemp)"
-if ! curl -fsSL --max-time 60 "${RAW_BASE}/agent.py" -o "${TMP_AGENT}"; then
+if ! curl -4 -fsSL --max-time 60 "${RAW_BASE}/agent.py" -o "${TMP_AGENT}"; then
   rm -f "${TMP_AGENT}"
   die "下载 agent.py 失败；可以手动 scp agent.py 到 ${APP_DIR}/agent.py 后重试"
 fi

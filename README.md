@@ -31,6 +31,9 @@
 
 3. Cloudflare 的域名请把这两条记录设为 **DNS only（灰云）**，不要开橙云。
 
+> 安装脚本里的 `curl` 都固定走 IPv4（`-4`），避免机器没有 IPv6 或 IPv6 线路不通时卡在握手阶段。
+> 这只解决地址族选择，不绕过域名阻断；如果 `raw.githubusercontent.com` 被阻断，按常见问题里的方式用 `--repo file://` 本地安装。
+
 ---
 
 ## 一、安装面板
@@ -209,7 +212,7 @@ https://lisa.example.com/sub/xxxxxxxx
 保存后复制弹窗里的安装命令，在**第二台**执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh \
+curl -4 -fsSL https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh \
   | sudo bash -s -- --token <令牌> --with-nginx
 ```
 
@@ -308,7 +311,7 @@ GitHub Release 的 `.dgst` 校验文件偶尔会 504。agent 安装脚本现在�
 仍然失败就重跑一次 agent 安装命令，或手动执行官方安装脚本：
 
 ```bash
-bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+bash -c "$(curl -4 -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 ```
 
 ### `xray` 启动失败，提示找不到 `config.json`

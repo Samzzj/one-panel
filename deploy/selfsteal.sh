@@ -51,7 +51,7 @@ fi
 # ------------------------------------------------------------ DNS 检查
 log "检查 ${DOMAIN} 的解析"
 RESOLVED="$(getent ahostsv4 "${DOMAIN}" 2>/dev/null | awk 'NR==1{print $1}' || true)"
-PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+PUBLIC_IP="$(curl -4 -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || true)"
 if [[ -z "${RESOLVED}" ]]; then
   warn "无法解析 ${DOMAIN}，证书签发大概率会失败"
 elif [[ -n "${PUBLIC_IP}" && "${RESOLVED}" != "${PUBLIC_IP}" ]]; then
@@ -163,7 +163,7 @@ cat <<EOF
    PROXY protocol v1（与 Nginx 的 proxy_protocol 对应）
 
  本机验证（应该看到上游站点的内容）：
-   curl -vk --resolve ${DOMAIN}:443:127.0.0.1 https://${DOMAIN}/ -o /dev/null
+   curl -4 -vk --resolve ${DOMAIN}:443:127.0.0.1 https://${DOMAIN}/ -o /dev/null
 
  订阅地址（由同一个 443 端口提供）：
    https://${DOMAIN}/sub/<token>

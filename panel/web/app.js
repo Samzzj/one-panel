@@ -214,7 +214,7 @@ function showQr(title, text) {
   });
 }
 
-function openModal({ title, body, footer = '', wide = false, onClose = null }) {
+function openModal({ title, body, footer = '', wide = false, onClose = null, closeOnOverlay = true }) {
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
   overlay.innerHTML = `
@@ -237,7 +237,9 @@ function openModal({ title, body, footer = '', wide = false, onClose = null }) {
   function onKey(e) {
     if (e.key === 'Escape') close();
   }
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.addEventListener('click', (e) => {
+    if (closeOnOverlay && e.target === overlay) close();
+  });
   $('[data-close]', overlay).addEventListener('click', () => close());
   document.addEventListener('keydown', onKey);
   return { overlay, modal: overlay.querySelector('.modal'), close };
@@ -695,14 +697,40 @@ function viewServers() {
     </div>`;
 }
 
+const SERVER_DRAFT_KEY = 'rp-server-draft';
+
+function readServerDraft() {
+  try {
+    const raw = localStorage.getItem(SERVER_DRAFT_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function writeServerDraft(data) {
+  try {
+    localStorage.setItem(SERVER_DRAFT_KEY, JSON.stringify(data));
+  } catch (err) { /* ignore */ }
+}
+
+function clearServerDraft() {
+  try {
+    localStorage.removeItem(SERVER_DRAFT_KEY);
+  } catch (err) { /* ignore */ }
+}
+
 function openServerModal(server) {
   const editing = !!server;
   const isLocal = editing && server.kind === 'local';
-  const s = server || {};
+  const draft = editing ? null : readServerDraft();
+  const s = { ...(server || {}), ...(draft || {}) };
   const m = openModal({
     title: editing ? `编辑服务器 · ${s.name}` : '添加服务器',
     wide: true,
+    closeOnOverlay: false,
     body: `<form id="server-form">
+      ${draft ? '<div class="notice info" style="margin-bottom:14px">已恢复上次未保存的填写内容。</div>' : ''}
       <div class="field"><label>名称</label>
         <input class="input" name="name" value="${esc(s.name || '')}" placeholder="香港 02" maxlength="48" required></div>
 
@@ -736,6 +764,21 @@ function openServerModal(server) {
 
   const form = $('#server-form', m.modal);
 
+  const saveDraft = () => {
+    if (editing) return;
+    const fd = new FormData(form);
+    writeServerDraft({
+      name: String(fd.get('name') || ''),
+      address: String(fd.get('address') || ''),
+      domain: String(fd.get('domain') || ''),
+      agent_url: String(fd.get('agent_url') || ''),
+      remark: String(fd.get('remark') || ''),
+      enabled: fd.get('enabled') === 'on',
+    });
+  };
+  form.addEventListener('input', saveDraft);
+  form.addEventListener('change', saveDraft);
+
   // 输入公网地址后自动补 Agent 地址；如果地址本身是域名，顺便填节点域名
   const addressInput = form.querySelector('[name=address]');
   const domainInput = form.querySelector('[name=domain]');
@@ -758,7 +801,10 @@ function openServerModal(server) {
     if (addressInput.value.trim()) sync();
   }
 
-  $('[data-cancel]', m.modal).onclick = () => m.close();
+  $('[data-cancel]', m.modal).onclick = () => {
+    if (!editing) clearServerDraft();
+    m.close();
+  };
   $('#server-save', m.modal).onclick = async () => {
     if (!form.reportValidity()) return;
     const fd = new FormData(form);
@@ -780,6 +826,7 @@ function openServerModal(server) {
       const result = editing
         ? await api(`/api/servers/${s.id}`, { method: 'PATCH', body })
         : await api('/api/servers', { method: 'POST', body });
+      if (!editing) clearServerDraft();
       m.close();
       if (!editing) {
         toast('服务器已添加');

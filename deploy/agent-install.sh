@@ -82,10 +82,20 @@ if [[ "${WITH_NGINX}" -eq 1 ]] && ! command -v nginx >/dev/null 2>&1; then
   systemctl enable --now nginx 2>/dev/null || true
 fi
 
+if [[ "${WITH_NGINX}" -eq 1 ]] && ! command -v certbot >/dev/null 2>&1; then
+  log "安装 certbot（节点一键签证书用）"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y -qq certbot >/dev/null || warn "certbot 安装失败，可稍后手动安装"
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q certbot >/dev/null || warn "certbot 安装失败，可稍后手动安装"
+  fi
+fi
+
 install -d -m 0755 "${APP_DIR}"
 install -d -m 0775 "$(dirname "${XRAY_CONFIG}")"
 install -d -m 0755 "${NGINX_DIR}"
 install -d -m 0755 /var/log/xray
+install -d -m 0755 /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
 
 # ------------------------------------------------------------ 下载 agent
 log "下载 agent.py"
@@ -124,7 +134,7 @@ RestartSec=3
 
 ProtectSystem=strict
 PrivateTmp=true
-ReadWritePaths=${APP_DIR} ${NGINX_DIR} $(dirname "${XRAY_CONFIG}") /var/lib/nginx /var/log/xray
+ReadWritePaths=${APP_DIR} ${NGINX_DIR} $(dirname "${XRAY_CONFIG}") /var/lib/nginx /var/log/xray /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
 
 [Install]
 WantedBy=multi-user.target

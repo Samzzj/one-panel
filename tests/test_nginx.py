@@ -45,6 +45,14 @@ class RenderTest(unittest.TestCase):
         self.assertIn("proxy_pass http://127.0.0.1:8080;", self.conf)
         self.assertIn("X-Forwarded-Proto https;", self.conf)
 
+    def test_no_sub_block_for_nodes(self) -> None:
+        conf = render_selfsteal(
+            "node.example.com", "https://example.org", "127.0.0.1:8003",
+            "/etc/letsencrypt/live", 1, "127.0.0.1:8080", include_sub=False,
+        )
+        self.assertNotIn("location ^~ /sub/", conf)
+        self.assertIn("proxy_pass https://$reality_upstream$request_uri;", conf)
+
     def test_no_proxy_protocol_when_disabled(self) -> None:
         conf = render_selfsteal(
             "node.example.com", "https://example.org", "127.0.0.1:8004",

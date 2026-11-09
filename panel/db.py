@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS servers (
     name         TEXT NOT NULL,
     kind         TEXT NOT NULL DEFAULT 'agent',
     address      TEXT NOT NULL DEFAULT '',
+    domain       TEXT NOT NULL DEFAULT '',
     agent_url    TEXT NOT NULL DEFAULT '',
     token        TEXT NOT NULL DEFAULT '',
     enabled      INTEGER NOT NULL DEFAULT 1,
@@ -210,6 +211,10 @@ class Database:
                 conn.execute("ALTER TABLE nodes ADD COLUMN server_id INTEGER NOT NULL DEFAULT 1")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_server ON nodes(server_id)")
 
+            server_columns = {row["name"] for row in conn.execute("PRAGMA table_info(servers)")}
+            if "domain" not in server_columns:
+                conn.execute("ALTER TABLE servers ADD COLUMN domain TEXT NOT NULL DEFAULT ''")
+
             if conn.execute("SELECT COUNT(*) FROM servers").fetchone()[0] == 0:
                 row = conn.execute("SELECT value FROM meta WHERE key='public_host'").fetchone()
                 address = (row["value"] if row else "") or ""
@@ -308,11 +313,12 @@ class Store:
     def create_server(self, data: dict) -> dict:
         with self.db.cursor() as conn:
             cur = conn.execute(
-                "INSERT INTO servers(name, kind, address, agent_url, token, enabled, remark, created_at)"
-                " VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO servers(name, kind, address, domain, agent_url, token, enabled, remark, created_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?)",
                 (
                     data["name"], data.get("kind") or "agent", data.get("address") or "",
-                    data.get("agent_url") or "", data.get("token") or rand_token(24),
+                    data.get("domain") or "", data.get("agent_url") or "",
+                    data.get("token") or rand_token(24),
                     1 if data.get("enabled", True) else 0, data.get("remark") or "", now(),
                 ),
             )
@@ -323,7 +329,7 @@ class Store:
 
     def update_server(self, server_id: int, data: dict) -> dict | None:
         fields, values = [], []
-        allowed = {"name", "address", "agent_url", "token", "enabled", "remark"}
+        allowed = {"name", "address", "domain", "agent_url", "token", "enabled", "remark"}
         for key, value in data.items():
             if key in allowed:
                 fields.append(f"{key}=?")
@@ -761,19 +767,25 @@ class Store:
                 old_id = int(server.get("id") or 0)
                 if server.get("kind") == "local" or old_id == local_id:
                     server_map[old_id] = local_id
-                    if server.get("address"):
+                    if server.get("address") or server.get("domain"):
                         conn.execute(
-                            "UPDATE servers SET name=?, address=? WHERE id=?",
-                            (server.get("name") or "本机", server["address"], local_id),
+                            "UPDATE servers SET name=?, address=?, domain=? WHERE id=?",
+                            (
+                                server.get("name") or "本机",
+                                server.get("address") or "",
+                                server.get("domain") or "",
+                                local_id,
+                            ),
                         )
                     continue
                 cur = conn.execute(
-                    "INSERT INTO servers(name, kind, address, agent_url, token, enabled, remark,"
+                    "INSERT INTO servers(name, kind, address, domain, agent_url, token, enabled, remark,"
                     " last_seen_at, last_status, last_error, created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         server["name"], "agent", server.get("address") or "",
-                        server.get("agent_url") or "", server.get("token") or rand_token(24),
+                        server.get("domain") or "", server.get("agent_url") or "",
+                        server.get("token") or rand_token(24),
                         1 if server.get("enabled", True) else 0, server.get("remark") or "",
                         int(server.get("last_seen_at") or 0), server.get("last_status") or "",
                         server.get("last_error") or "", int(server.get("created_at") or now()),

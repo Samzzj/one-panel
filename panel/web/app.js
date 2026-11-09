@@ -109,6 +109,23 @@ function fmtQuota(used, quota) {
   return quota > 0 ? `${u} / ${fmtBytes(quota)}` : `${u} / 不限`;
 }
 
+function agentUrlFromAddress(value) {
+  let host = String(value || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  if (!host) return '';
+  if (host.startsWith('[')) {
+    return /^\[[^\]]+\]:\d+$/.test(host) ? `http://${host}` : `http://${host}:8787`;
+  }
+  if ((host.match(/:/g) || []).length > 1) return `http://[${host}]:8787`;
+  if (/:\d+$/.test(host)) return `http://${host}`;
+  return `http://${host}:8787`;
+}
+
+function looksLikeDomain(value) {
+  let host = String(value || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  if (!host || /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':')) return false;
+  return /^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(host);
+}
+
 function toast(text, type = 'ok', timeout = 3600) {
   const root = $('#toast-root');
   if (!root) return;
@@ -635,7 +652,7 @@ function viewServers() {
     <tr>
       <td>
         <div class="cell-title">${esc(s.name)}</div>
-        <div class="cell-sub">${esc(s.remark || (s.kind === 'local' ? '面板所在机器' : '节点机器'))}</div>
+        <div class="cell-sub">${esc(s.domain || s.remark || (s.kind === 'local' ? '面板所在机器' : '节点机器'))}</div>
       </td>
       <td><span class="tag ${s.kind === 'local' ? 'tag-vision' : 'tag-xhttp'}">${s.kind === 'local' ? '本机' : 'Agent'}</span></td>
       <td class="mono">${esc(s.address || STATE.public_host)}</td>
@@ -649,7 +666,8 @@ function viewServers() {
         <button class="btn btn-sm" data-act="test" data-id="${s.id}">测试</button>
         ${s.kind === 'local'
           ? `<button class="icon-btn" data-act="edit" data-id="${s.id}" title="编辑">${ICON.edit}</button>`
-          : `<button class="icon-btn" data-act="cmd" data-id="${s.id}" title="安装命令 / 重置令牌">${ICON.terminal}</button>
+          : `<button class="icon-btn" data-act="selfsteal" data-id="${s.id}" title="初始化自偷自（签证书 + 写 nginx）">${ICON.chain}</button>
+             <button class="icon-btn" data-act="cmd" data-id="${s.id}" title="安装命令 / 重置令牌">${ICON.terminal}</button>
              <button class="icon-btn" data-act="edit" data-id="${s.id}" title="编辑">${ICON.edit}</button>
              <button class="icon-btn danger" data-act="del" data-id="${s.id}" title="删除">${ICON.trash}</button>`}
       </td>
@@ -693,9 +711,14 @@ function openServerModal(server) {
         <div class="hint">订阅链接里使用的地址。每台服务器可以不同。</div></div>
 
       ${isLocal ? '' : `
+      <div class="field"><label>节点域名（已解析到这台机器）</label>
+        <input class="input" name="domain" value="${esc(s.domain || '')}" placeholder="lisa2.example.com">
+        <div class="hint">用于 REALITY 的 SNI。装好 agent 后可以一键签证书、写 nginx。</div></div>
+
       <div class="form-row">
         <div class="field"><label>Agent 地址</label>
-          <input class="input" name="agent_url" value="${esc(s.agent_url || '')}" placeholder="http://1.2.3.4:8787" required></div>
+          <input class="input" name="agent_url" value="${esc(s.agent_url || '')}" placeholder="http://1.2.3.4:8787" required>
+          <div class="hint">输入公网地址后自动生成，可手动改端口。</div></div>
         <div class="field"><label>Agent 令牌</label>
           <input class="input" name="token" value="" placeholder="${editing ? '留空则不修改' : '留空自动生成'}"></div>
       </div>
@@ -712,6 +735,29 @@ function openServerModal(server) {
   });
 
   const form = $('#server-form', m.modal);
+
+  // 输入公网地址后自动补 Agent 地址；如果地址本身是域名，顺便填节点域名
+  const addressInput = form.querySelector('[name=address]');
+  const domainInput = form.querySelector('[name=domain]');
+  const agentInput = form.querySelector('[name=agent_url]');
+  if (addressInput && agentInput) {
+    let agentAuto = !agentInput.value.trim();
+    let domainAuto = domainInput ? !domainInput.value.trim() : false;
+    agentInput.addEventListener('input', () => { agentAuto = false; });
+    if (domainInput) domainInput.addEventListener('input', () => { domainAuto = false; });
+    const sync = () => {
+      const address = addressInput.value.trim();
+      if (agentAuto) agentInput.value = agentUrlFromAddress(address);
+      if (domainInput && domainAuto) {
+        domainInput.value = looksLikeDomain(address)
+          ? address.replace(/^https?:\/\//i, '').replace(/\/.*$/, '')
+          : '';
+      }
+    };
+    addressInput.addEventListener('input', sync);
+    if (addressInput.value.trim()) sync();
+  }
+
   $('[data-cancel]', m.modal).onclick = () => m.close();
   $('#server-save', m.modal).onclick = async () => {
     if (!form.reportValidity()) return;
@@ -723,6 +769,7 @@ function openServerModal(server) {
       enabled: fd.get('enabled') === 'on',
     };
     if (!isLocal) {
+      body.domain = String(fd.get('domain') || '').trim();
       body.agent_url = String(fd.get('agent_url') || '').trim();
       const token = String(fd.get('token') || '').trim();
       if (token) body.token = token;
@@ -772,8 +819,8 @@ function showInstallCommand(server, token, installUrl) {
         <div class="copy-row"><input class="input" readonly value="${esc(token)}">
           <button class="btn btn-sm" data-copy="${esc(token)}">${ICON.copy}</button></div>
       </div>
-      <div class="hint">装完回到本页点「测试」；成功后再点右上角「应用配置」。
-        自偷自还需要在那台机器上有域名证书，见「自偷自向导」。</div>`,
+      <div class="hint">装完回到本页点「测试」，成功后再点这一行的链条图标「初始化自偷自」；
+        面板会让 agent 自动签证书、写 nginx。之后建节点时 SNI 用上面的节点域名。</div>`,
     footer: '<button class="btn" data-close2>关闭</button>',
   });
   $('[data-close2]', m.modal).onclick = () => m.close();
@@ -781,6 +828,37 @@ function showInstallCommand(server, token, installUrl) {
     const btn = e.target.closest('[data-copy]');
     if (btn) copyText(btn.dataset.copy);
   });
+}
+
+function showSelfstealResult(server, r) {
+  const res = r.result || {};
+  const nginx = res.nginx || {};
+  const parts = [
+    `<div class="kv"><span>服务器</span><span>${esc(server.name)}</span></div>`,
+    `<div class="kv"><span>域名</span><span class="mono">${esc(r.domain || server.domain || '')}</span></div>`,
+    `<div class="kv"><span>证书</span><span>${res.issued ? '本次已签发' : '已存在，跳过签发'}</span></div>`,
+  ];
+  if (res.error) {
+    parts.push(`<div class="notice danger" style="margin-top:10px">${esc(res.error)}</div>`);
+  }
+  if (nginx.test_output) {
+    parts.push(`<div class="field" style="margin-top:12px"><label>nginx -t</label>
+      <div class="code-block"><pre class="wrap" style="max-height:220px">${esc(nginx.test_output)}</pre></div></div>`);
+  }
+  if (res.cert_output) {
+    parts.push(`<div class="field"><label>certbot 输出</label>
+      <div class="code-block"><pre class="wrap" style="max-height:220px">${esc(res.cert_output)}</pre></div></div>`);
+  }
+  const m = openModal({
+    title: r.ok ? '自偷自初始化完成' : '自偷自初始化失败',
+    wide: true,
+    body: `${r.ok
+      ? '<div class="notice info" style="margin-bottom:12px">证书和 nginx 已就绪。现在到「节点」新建节点，SNI 填这个域名即可。</div>'
+      : '<div class="notice danger" style="margin-bottom:12px">证书或 nginx 没有成功，看下面的输出。</div>'}
+      ${parts.join('')}`,
+    footer: '<button class="btn" data-close2>关闭</button>',
+  });
+  $('[data-close2]', m.modal).onclick = () => m.close();
 }
 
 function bindServers() {
@@ -798,6 +876,36 @@ function bindServers() {
     if (!server) return;
 
     if (btn.dataset.act === 'edit') return openServerModal(server);
+
+    if (btn.dataset.act === 'selfsteal') {
+      if (!server.domain) {
+        toast('先在编辑里填写已解析到这台机器的节点域名', 'err');
+        openServerModal(server);
+        return;
+      }
+      const ok = await confirmDialog(
+        '初始化自偷自',
+        `将在「${server.name}」上用 certbot 签发 ${server.domain} 的证书，并写入 nginx。`
+        + '需要该域名已解析到这台机器、80 端口可从公网访问；过程中会短暂停止 nginx。继续？',
+        true,
+      );
+      if (!ok) return;
+      btn.disabled = true;
+      toast('正在签发证书并写入 nginx，可能需要 30-90 秒…', 'info', 8000);
+      try {
+        const result = await api(`/api/servers/${id}/selfsteal`, {
+          method: 'POST',
+          body: { domain: server.domain },
+        });
+        showSelfstealResult(server, result);
+        await refresh();
+      } catch (err) {
+        toast(err.message, 'err', 6000);
+      } finally {
+        btn.disabled = false;
+      }
+      return;
+    }
 
     if (btn.dataset.act === 'test') {
       btn.disabled = true;
@@ -962,6 +1070,8 @@ function nodeForm(n) {
   const shortIds = (n.short_ids || []).join(',');
   const servers = STATE.servers || [];
   const serverId = Number(n.server_id || (servers[0] && servers[0].id) || 1);
+  const currentServer = servers.find((server) => server.id === serverId);
+  const defaultSni = n.sni || (currentServer && currentServer.domain) || STATE.settings.default_sni || '';
   return `
     <div class="field"><label>节点名称</label>
       <input class="input" name="name" value="${esc(n.name || '')}" placeholder="香港 · Vision" maxlength="48" required></div>
@@ -983,8 +1093,8 @@ function nodeForm(n) {
     </div>
 
     <div class="field"><label>SNI 域名</label>
-      <input class="input" name="sni" value="${esc(n.sni || STATE.settings.default_sni || '')}" placeholder="node.example.com">
-      <div class="hint">必须是本机 Nginx 持有有效证书的域名。REALITY 回落时，探针会用它做 TLS 握手。</div></div>
+      <input class="input" name="sni" value="${esc(defaultSni)}" placeholder="node.example.com">
+      <div class="hint">必须与这台服务器上 Nginx 的证书域名完全一致。</div></div>
 
     <div class="form-row">
       <div class="field"><label>回落地址 dest</label>
@@ -1045,6 +1155,19 @@ function openNodeModal(node) {
   transportSel.addEventListener('change', () => {
     $('#xhttp-fields', form).classList.toggle('hidden', transportSel.value !== 'xhttp');
   });
+
+  const serverSel = form.querySelector('[name=server_id]');
+  const sniInput = form.querySelector('[name=sni]');
+  if (serverSel && sniInput) {
+    serverSel.addEventListener('change', () => {
+      const selected = STATE.servers.find((server) => String(server.id) === serverSel.value);
+      const domains = new Set((STATE.servers || []).map((server) => server.domain).filter(Boolean));
+      const current = sniInput.value.trim();
+      if (selected && (!current || domains.has(current))) {
+        sniInput.value = selected.domain || STATE.settings.default_sni || '';
+      }
+    });
+  }
 
   $('#node-save', m.modal).onclick = async () => {
     if (!form.reportValidity()) return;

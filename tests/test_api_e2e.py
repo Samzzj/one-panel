@@ -374,12 +374,14 @@ class ApiFlowTest(unittest.TestCase):
             {
                 "name": "远程节点",
                 "address": "198.51.100.7",
+                "domain": "lisa2.example.com",
                 "agent_url": f"http://127.0.0.1:{self.agent_port}",
                 "token": "remote-agent-token-123",
             },
         )
         self.assertEqual(status, 200, created)
         remote_id = created["server"]["id"]
+        self.assertEqual(created["server"]["domain"], "lisa2.example.com")
         self.assertTrue(created["token"])
 
         status, health, _ = c.request("POST", f"/api/servers/{remote_id}/test", {})

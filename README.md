@@ -63,6 +63,7 @@ REALITY 的特点是**自己不持有证书**：对没有通过认证的连接�
 ## 功能
 
 - **多服务器**：主控一台，其余机器 agent；配置按服务器生成并分别下发，订阅链接自动指向对应机器
+- **一键自偷自**：添加服务器时填节点域名，装好 agent 后点链条图标，agent 自动签证书、写 Nginx、reload
 - **两种传输**：Vision（TCP + XTLS，低延迟）与 XHTTP（HTTP 传输，抗干扰 / 可挂 CDN），共用同一套 REALITY 回落链路
 - **一个订阅多节点**：同一订阅可同时包含不同服务器、不同传输的节点，客户端自动列成可选节点
 - **分享链接 / 订阅**：标准 `vless://`、Base64 订阅、Clash(mihomo) YAML；按路径或 UA 自动识别客户端
@@ -173,13 +174,16 @@ bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-rele
 | 角色 | 装什么 | 做什么 |
 |---|---|---|
 | 主控 | 面板 + 本机 Xray | 存数据、生成配置、下发、收流量、提供订阅 |
-| 节点 | 单文件 agent + Xray | 执行 `apply` / `stats` / `nginx` 三条指令 |
+| 节点 | 单文件 agent + Xray | 执行 `apply` / `stats` / `nginx` / `selfsteal` 指令 |
 
 agent 就是仓库根目录的 `agent.py`，标准库单文件，不跑数据库、不带 Web UI。
 
 ### 添加一台机器
 
-1. 面板 → 服务器 → 添加服务器，填公网地址（订阅里用）和 `http://IP:8787`
+1. 面板 → 服务器 → 添加服务器：
+   - **公网地址**：客户端连接用的 IP 或域名
+   - **节点域名**：已经解析到这台机器的域名，用于 REALITY 的 SNI 和一键签证书
+   - **Agent 地址**：输入公网地址后会自动填成 `http://IP:8787`，可手动改端口
 2. 复制弹窗里的命令，在目标机执行：
 
 ```bash
@@ -188,7 +192,15 @@ curl -fsSL https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-
 ```
 
 3. 回到面板点「测试」，状态变成在线
-4. 到「节点」新建节点时选择这台服务器，再点右上角「应用配置」
+4. 点这一行最左边的链条图标 **「初始化自偷自」**，agent 会自动：
+   - 检查/安装 certbot
+   - 短暂停止 nginx，用 HTTP-01 签发 `节点域名` 的证书
+   - 写 `/etc/nginx/conf.d/reality-selfsteal.conf`（节点版不带 `/sub/`）
+   - `nginx -t` 后 reload
+5. 到「节点」新建节点，所属服务器选这台，SNI 会自动填节点域名；再点右上角「应用配置」
+
+> 一键签证书要求：域名 A 记录已指向这台机器、80 端口可从公网访问。
+> 已经装过 agent 的机器需要重跑一次安装命令，才会带上 `selfsteal` 接口和 certbot。
 
 ### 网络与安全
 
@@ -204,13 +216,16 @@ ufw allow from <主控IP> to any port 8787 proto tcp
 
 ### 每台机器的自偷自
 
-每台节点都要有自己的域名 + 证书 + Nginx：
+优先用面板上的「初始化自偷自」按钮：填好节点域名、装好 agent、点一下，证书和 Nginx 都由 agent 完成，
+不需要再登节点机器。
+
+只有 agent 装不上或想手动控制时才走老流程：
 
 1. 在目标机签证书（`certbot` / `acme.sh`，同单机流程）
 2. 面板「自偷自向导」选择该节点，核对 SNI 与证书路径
 3. 点「推送到 <服务器>」→ agent 写配置、`nginx -t`、reload
 
-证书还没签就推送会 `nginx -t` 失败，agent 会自动恢复原配置，不会把机器搞挂。
+证书没签就推送会 `nginx -t` 失败，agent 会自动恢复原配置，不会把机器搞挂。
 
 ---
 
@@ -299,7 +314,7 @@ reality-panel/
 │   ├── panel-https.sh      # 给面板加公网 HTTPS 入口（不用隧道）
 │   ├── selfsteal.sh        # 证书 + Nginx 回落配置
 │   └── nginx-selfsteal.conf.example
-├── tests/                  # 49 个单元 / 端到端测试
+├── tests/                  # 50 个单元 / 端到端测试
 ├── .github/workflows/ci.yml
 ├── SECURITY.md
 ├── CONTRIBUTING.md
@@ -423,7 +438,7 @@ python3 app.py allow clear --data-dir /var/lib/reality-panel
 
 ```bash
 python3 app.py --port 8080 --data-dir ./data      # 本地跑
-python3 -m unittest discover -s tests -v          # 49 项测试
+python3 -m unittest discover -s tests -v          # 50 项测试
 ```
 
 测试覆盖：X25519 官方向量、链接与订阅编码、Clash YAML、Xray 配置结构、

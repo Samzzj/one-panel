@@ -41,6 +41,7 @@ def render_selfsteal(
     cert_dir: str,
     xver: int = 1,
     panel_addr: str = "127.0.0.1:8080",
+    include_sub: bool = True,
 ) -> str:
     """生成 nginx server 块。所有插值都做过白名单校验。"""
     sni = sni.strip()
@@ -79,6 +80,24 @@ def render_selfsteal(
     real_ip_header proxy_protocol;
 """
 
+    # 节点服务器上没有面板，不需要 /sub/ 反代；只有面板本机才加
+    sub_block = ""
+    if include_sub:
+        sub_block = f"""
+    # ---- 订阅入口 ----
+    # 普通 HTTPS 请求（浏览器 / 客户端拉订阅）没有 REALITY 认证数据，
+    # 会被原样转到这个 server，于是同一个 443 域名也能提供订阅。
+    location ^~ /sub/ {{
+        proxy_pass http://{panel_addr};
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 30s;
+    }}
+"""
+
     return f"""# ============================================================
 # 由 Reality Panel 生成 —— 重新生成会覆盖本文件
 # 链路: Xray REALITY -> PROXY protocol -> {listen_host}:{listen_port} -> 本地 TLS -> 反代 {upstream_host}
@@ -111,20 +130,7 @@ server {{
     # ---- 上游真实站点 ----
     resolver 223.5.5.5 119.29.29.29 1.1.1.1 ipv6=off valid=300s;
     set $reality_upstream "{upstream_host}";
-
-    # ---- 订阅入口 ----
-    # 普通 HTTPS 请求（浏览器 / 客户端拉订阅）没有 REALITY 认证数据，
-    # 会被原样转到这个 server，于是同一个 443 域名也能提供订阅。
-    location ^~ /sub/ {{
-        proxy_pass http://{panel_addr};
-        proxy_http_version 1.1;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 30s;
-    }}
-
+{sub_block}
     location / {{
         proxy_pass {scheme}://$reality_upstream$request_uri;
         proxy_http_version 1.1;

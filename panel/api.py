@@ -21,7 +21,7 @@ from .links import (
     subscription_payload,
 )
 from .nginx import plan as nginx_plan
-from .nginx import valid_domain, valid_hostport
+from .nginx import render_selfsteal, valid_domain, valid_hostport
 from .remote import AgentClient
 from .util import now, rand_hex, rand_token
 from .xray import new_node_keys
@@ -239,6 +239,11 @@ def _server_payload(data: dict, *, partial: bool = False) -> dict:
         if address and ("/" in address or " " in address or "@" in address):
             raise ApiError(400, "公网地址只填 IP 或域名，不要带协议和路径")
         payload["address"] = address
+    if not partial or "domain" in data:
+        domain = _text(data, "domain", "节点域名", maxlen=253, default="")
+        if domain and not valid_domain(domain):
+            raise ApiError(400, "节点域名格式不正确，例如 lisa2.example.com")
+        payload["domain"] = domain
     if not partial or "agent_url" in data:
         agent_url = _text(data, "agent_url", "Agent 地址", maxlen=200, default="")
         if agent_url:
@@ -557,6 +562,60 @@ def rotate_server_token(app, req: Request, server_id: str) -> dict:
     _audit(app, req, "重置 Agent 令牌", server["name"], "")
     assert updated is not None
     return {"ok": True, "token": updated["token"], "server": _public_server(updated)}
+
+
+def selfsteal_server(app, req: Request, server_id: str) -> dict:
+    """在远程节点上一键签证书 + 写 Nginx 回落配置。"""
+    sid = int(server_id)
+    server = app.store.server(sid)
+    if not server:
+        raise ApiError(404, "服务器不存在")
+    if server["kind"] != "agent":
+        raise ApiError(400, "本机请用「自偷自向导」手动写入；这个按钮用于远程节点")
+
+    data = req.json()
+    domain = str(data.get("domain") or server.get("domain") or "").strip()
+    if not valid_domain(domain):
+        raise ApiError(400, "请先填写节点域名，例如 lisa2.example.com")
+    email = str(data.get("email") or "").strip()
+
+    settings = app.store.settings()
+    try:
+        conf = render_selfsteal(
+            domain,
+            settings.get("nginx_upstream") or "https://www.lovelive-anime.jp",
+            settings.get("nginx_listen") or "127.0.0.1:8003",
+            settings.get("cert_dir") or "/etc/letsencrypt/live",
+            1,
+            settings.get("panel_addr") or "127.0.0.1:8080",
+            include_sub=False,
+        )
+    except ValueError as exc:
+        raise ApiError(400, str(exc))
+
+    result = AgentClient(server).selfsteal(
+        domain,
+        conf,
+        settings.get("nginx_conf") or "/etc/nginx/conf.d/reality-selfsteal.conf",
+        settings.get("cert_dir") or "/etc/letsencrypt/live",
+        email,
+    )
+    ok = bool(result.get("ok"))
+    if ok:
+        app.store.update_server(sid, {"domain": domain})
+        app.store.touch_server(sid, "ok")
+        _audit(app, req, "初始化自偷自", server["name"], domain)
+    else:
+        detail = result.get("cert_output") or (result.get("nginx") or {}).get("test_output") or "失败"
+        app.store.touch_server(sid, "error", str(detail))
+
+    updated = app.store.server(sid)
+    return {
+        "ok": ok,
+        "domain": domain,
+        "result": result,
+        "server": _public_server(updated) if updated else None,
+    }
 
 
 # ---------------------------------------------------------------- 订阅用户
@@ -1010,6 +1069,7 @@ def build_router() -> Router:
     router.add("DELETE", r"/api/servers/(?P<server_id>\d+)", delete_server)
     router.add("POST", r"/api/servers/(?P<server_id>\d+)/test", test_server)
     router.add("POST", r"/api/servers/(?P<server_id>\d+)/token", rotate_server_token)
+    router.add("POST", r"/api/servers/(?P<server_id>\d+)/selfsteal", selfsteal_server)
 
     router.add("POST", r"/api/subs", create_sub)
     router.add("PATCH", r"/api/subs/(?P<sub_id>\d+)", update_sub)

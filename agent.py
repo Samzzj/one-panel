@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """One Panel Node Agent —— 装在被管理机器上的小型执行端。
 
-职责只有四件事：
-    GET  /health   报告 Xray 与主机状态
-    POST /apply    写入 Xray 配置 -> 测试 -> 重启
-    GET  /stats    读取每个用户的流量计数
-    POST /nginx    写入自偷自 Nginx 配置 -> 测试 -> reload
+职责：
+    GET  /health    报告 Xray 与主机状态
+    POST /apply     写入 Xray 配置 -> 测试 -> 重启
+    GET  /stats     读取每个用户的流量计数
+    POST /nginx     写入自偷自 Nginx 配置 -> 测试 -> reload
+    POST /selfsteal 签发证书 + 写 Nginx 回落配置 + reload
 
 鉴权：请求头 X-Agent-Token，必须与服务端启动参数一致。
 只依赖 Python 标准库，单文件即可运行。
@@ -17,7 +18,9 @@ import argparse
 import hmac
 import json
 import os
+import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -29,8 +32,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.4.0"
+AGENT_VERSION = "0.5.0"
 MAX_BODY = 2 * 1024 * 1024
+DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")
 
 
 # ---------------------------------------------------------------- 工具
@@ -184,6 +188,82 @@ class Agent:
                 slot["down"] = value
         return users
 
+    # ------------------------------------------------------------ 证书 / 自偷自
+
+    def _service_active(self, name: str) -> bool:
+        try:
+            proc = run(["systemctl", "is-active", name], timeout=8)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return proc.returncode == 0 and "active" in (proc.stdout or "").strip()
+
+    def issue_cert(self, domain: str, cert_dir: str, email: str = "") -> dict:
+        """用 certbot standalone 签 HTTP-01 证书；已有则跳过。"""
+        cert = os.path.join(cert_dir, domain, "fullchain.pem")
+        key = os.path.join(cert_dir, domain, "privkey.pem")
+        result: dict[str, Any] = {"ok": False, "issued": False, "output": ""}
+
+        if os.path.exists(cert) and os.path.exists(key):
+            result.update(ok=True, output="证书已存在，跳过签发")
+            return result
+
+        if not shutil.which("certbot"):
+            result["output"] = "节点未安装 certbot；请重跑 agent 安装命令，或手动 apt install certbot"
+            return result
+
+        nginx_was_active = self._service_active("nginx")
+        if nginx_was_active:
+            run(["systemctl", "stop", "nginx"], timeout=30)
+
+        args = [
+            "certbot", "certonly", "--standalone",
+            "-d", domain,
+            "--non-interactive", "--agree-tos", "--keep-until-expiring",
+            "--deploy-hook", "systemctl reload nginx || true",
+        ]
+        if email:
+            args += ["-m", email]
+        else:
+            args += ["--register-unsafely-without-email"]
+
+        try:
+            proc = run(args, timeout=240)
+            output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+            code = proc.returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            output = f"执行 certbot 失败：{exc}"
+            code = 1
+
+        if nginx_was_active:
+            run(["systemctl", "start", "nginx"], timeout=30)
+
+        result["output"] = output[-4000:]
+        if code != 0:
+            return result
+        if not (os.path.exists(cert) and os.path.exists(key)):
+            result["output"] += f"\ncertbot 返回 0 但找不到证书：{cert}"
+            return result
+        result.update(ok=True, issued=True)
+        return result
+
+    def selfsteal(self, domain: str, conf: str, path: str, cert_dir: str, email: str = "") -> dict:
+        """签证书 + 写 nginx 回落配置 + reload，一次完成。"""
+        result: dict[str, Any] = {"ok": False, "issued": False, "cert_output": "", "nginx": {}}
+        if not DOMAIN_RE.match(domain or ""):
+            result["cert_output"] = f"域名格式不正确：{domain}"
+            return result
+
+        issued = self.issue_cert(domain, cert_dir, email)
+        result["issued"] = bool(issued.get("issued"))
+        result["cert_output"] = issued.get("output") or ""
+        if not issued.get("ok"):
+            return result
+
+        nginx_result = self.apply_nginx(path, conf)
+        result["nginx"] = nginx_result
+        result["ok"] = bool(nginx_result.get("ok"))
+        return result
+
     # ------------------------------------------------------------ Nginx
 
     def apply_nginx(self, path: str, conf: str) -> dict:
@@ -235,6 +315,8 @@ class Agent:
 
         try:
             proc = run(["systemctl", "reload", "nginx"], timeout=30)
+            if proc.returncode != 0:
+                proc = run(["systemctl", "restart", "nginx"], timeout=30)
             result["reloaded"] = proc.returncode == 0
             result["test_output"] += "\n" + ((proc.stdout or "") + (proc.stderr or "")).strip()[-1000:]
         except (OSError, subprocess.SubprocessError):
@@ -335,6 +417,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/stats":
                 self._send({"ok": True, "users": self.agent.stats()})
+                return
+            if path == "/selfsteal":
+                payload = self._body()
+                conf = payload.get("conf")
+                if not isinstance(conf, str):
+                    self._send({"ok": False, "error": "缺少 conf 文本"}, 400)
+                    return
+                self._send(
+                    self.agent.selfsteal(
+                        str(payload.get("domain") or ""),
+                        conf,
+                        str(payload.get("path") or os.path.join(self.agent.nginx_dir, "reality-selfsteal.conf")),
+                        str(payload.get("cert_dir") or "/etc/letsencrypt/live"),
+                        str(payload.get("email") or ""),
+                    )
+                )
                 return
             self._send({"ok": False, "error": "not found"}, 404)
         except Exception:  # noqa: BLE001

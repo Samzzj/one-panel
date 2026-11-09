@@ -59,3 +59,11 @@ class AgentClient:
 
     def nginx(self, conf: str, path: str) -> dict:
         return self._call("POST", "/nginx", {"conf": conf, "path": path}, timeout=40)
+
+    def selfsteal(self, domain: str, conf: str, path: str, cert_dir: str, email: str = "") -> dict:
+        return self._call(
+            "POST",
+            "/selfsteal",
+            {"domain": domain, "conf": conf, "path": path, "cert_dir": cert_dir, "email": email},
+            timeout=300,
+        )

@@ -649,7 +649,7 @@ class Store:
             "SELECT c.*, n.name AS node_name, n.transport AS node_transport, n.port AS node_port,"
             " n.sni AS node_sni, s.name AS sub_name, s.token AS sub_token,"
             " s.enabled AS sub_enabled, s.expires_at AS sub_expires_at,"
-            " sv.name AS server_name, sv.address AS server_address"
+            " sv.name AS server_name, COALESCE(NULLIF(sv.address,''), NULLIF(sv.domain,''), '') AS server_address"
             " FROM clients c JOIN nodes n ON n.id=c.node_id JOIN subs s ON s.id=c.sub_id"
             " JOIN servers sv ON sv.id=n.server_id"
         )
@@ -666,7 +666,8 @@ class Store:
             row = conn.execute(
                 "SELECT c.*, n.name AS node_name, n.transport AS node_transport,"
                 " n.port AS node_port, n.sni AS node_sni, s.name AS sub_name,"
-                " s.token AS sub_token, sv.name AS server_name, sv.address AS server_address"
+                " s.token AS sub_token, sv.name AS server_name,"
+                " COALESCE(NULLIF(sv.address,''), NULLIF(sv.domain,''), '') AS server_address"
                 " FROM clients c JOIN nodes n ON n.id=c.node_id"
                 " JOIN subs s ON s.id=c.sub_id JOIN servers sv ON sv.id=n.server_id WHERE c.id=?",
                 (client_id,),
@@ -684,7 +685,9 @@ class Store:
                 "SELECT c.*, n.name AS node_name, n.transport, n.listen, n.port, n.sni,"
                 " n.dest, n.xver, n.private_key, n.public_key, n.short_ids, n.xhttp_path,"
                 " n.xhttp_mode, n.fingerprint, n.enabled AS node_enabled,"
-                " sv.name AS server_name, sv.address AS server_address, sv.enabled AS server_enabled"
+                " sv.name AS server_name,"
+                " COALESCE(NULLIF(sv.address,''), NULLIF(sv.domain,''), '') AS server_address,"
+                " sv.enabled AS server_enabled"
                 " FROM clients c JOIN nodes n ON n.id=c.node_id"
                 " JOIN servers sv ON sv.id=n.server_id"
                 " WHERE c.sub_id=? ORDER BY n.id",

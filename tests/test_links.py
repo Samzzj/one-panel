@@ -52,6 +52,7 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(query["sid"], ["ab12cd34"])
         self.assertEqual(query["spx"], ["/"])
         self.assertEqual(query["fp"], ["chrome"])
+        self.assertEqual(query["support-x25519mlkem768"], ["true"])
         self.assertEqual(unquote(parts.fragment), "香港 Vision")
 
     def test_xhttp_link(self) -> None:
@@ -63,6 +64,7 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(query["host"], ["node.example.com"])
         self.assertNotIn("flow", query)
         self.assertEqual(query["fp"], ["firefox"])
+        self.assertEqual(query["support-x25519mlkem768"], ["true"])
 
     def test_ipv6_host_wrapped(self) -> None:
         link = vless_link(VISION, UUID, "v6", "2001:db8::1")

@@ -386,7 +386,9 @@ v0.4.2 之后面板和 agent 都会自动写成 644。
 Xray 26.9+ 的 REALITY 默认使用 **X25519MLKEM768**，mihomo 必须显式开启，否则会认证失败；
 但用 curl 测回落仍然是正常的，所以很容易误判成服务器坏了。
 
-v0.7.1 起面板生成的 Clash 订阅会自动带上：
+v0.7.1 起 Clash 订阅、v0.8.0 起 vless 分享链接都会带上 `support-x25519mlkem768=true`。
+
+Clash 里是：
 
 ```yaml
 reality-opts:
@@ -395,9 +397,15 @@ reality-opts:
   support-x25519mlkem768: true
 ```
 
+vless 链接里是查询参数：
+
+```
+&support-x25519mlkem768=true
+```
+
 处理：
 
-1. 面板更新到 v0.7.1
+1. 面板更新到 v0.8.0
 2. 删除 FlClash 里的旧配置，重新导入订阅
 3. 如果客户端很旧，升级 FlClash / mihomo
 

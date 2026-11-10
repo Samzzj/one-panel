@@ -53,6 +53,9 @@ def vless_link(node: dict, uuid: str, remark: str, host: str) -> str:
         ("fp", str(fingerprint)),
         ("pbk", str(node.get("public_key") or "")),
         ("sid", short_id),
+        # Xray 26.9+ 的 REALITY 要求 ClientHello 带 X25519MLKEM768；
+        # Mihomo/Surge 等非 Xray 客户端从分享链接导入时也需要这个参数。
+        ("support-x25519mlkem768", "true"),
     ]
 
     if transport == "xhttp":

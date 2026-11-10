@@ -73,7 +73,7 @@ python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)
 
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get -o Acquire::ForceIPv4=true update -qq || true
+  timeout 90 apt-get -o Acquire::ForceIPv4=true update -qq || true
   timeout 180 apt-get -o Acquire::ForceIPv4=true install -y -qq curl ca-certificates >/dev/null || \
     warn "依赖安装失败或超时"
 elif command -v dnf >/dev/null 2>&1; then

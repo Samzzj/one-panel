@@ -117,13 +117,45 @@ if [[ "${INSTALL_XRAY}" -eq 1 ]]; then
   if command -v xray >/dev/null 2>&1; then
     log "已安装 Xray: $(xray version 2>/dev/null | head -n1)"
   else
-    log "安装 Xray-core（官方脚本）"
-    if bash -c "$(curl -4 -fsSL --connect-timeout 10 --max-time 60 https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install; then
+    log "安装 Xray-core（官方脚本，失败自动重试 3 次）"
+    xray_installed=0
+    for attempt in 1 2 3; do
+      script="$(curl -4 -fsSL --connect-timeout 10 --max-time 60 https://github.com/XTLS/Xray-install/raw/main/install-release.sh || true)"
+      if [[ -n "${script}" ]] && bash -c "${script}" @ install; then
+        xray_installed=1
+        break
+      fi
+      warn "Xray 安装失败（第 ${attempt}/3 次），10 秒后重试"
+      sleep 10
+    done
+    if [[ "${xray_installed}" -eq 1 ]]; then
       log "Xray 安装完成"
     else
       warn "Xray 安装失败，可稍后手动安装；面板仍可启动并生成配置"
     fi
   fi
+
+  # 新版 Xray 安装脚本不一定生成 config.json，没有配置服务会直接启动失败
+  if command -v xray >/dev/null 2>&1 && [[ ! -f /usr/local/etc/xray/config.json ]]; then
+    log "生成最小 Xray 配置（面板下发后会覆盖）"
+    install -d -m 0775 /usr/local/etc/xray
+    cat >/usr/local/etc/xray/config.json <<'EOF'
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 1080,
+      "protocol": "socks",
+      "settings": { "auth": "noauth", "udp": false }
+    }
+  ],
+  "outbounds": [ { "protocol": "freedom" } ]
+}
+EOF
+    chmod 644 /usr/local/etc/xray/config.json
+  fi
+
   systemctl enable --now "${XRAY_SERVICE}" 2>/dev/null || \
     warn "无法启动 ${XRAY_SERVICE} 服务，请稍后手动检查"
 fi

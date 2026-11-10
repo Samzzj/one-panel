@@ -209,6 +209,7 @@ install -d -m 0755 "${APP_DIR}"
 install -d -m 0775 "$(dirname "${XRAY_CONFIG}")"
 install -d -m 0755 "${NGINX_DIR}"
 install -d -m 0755 /var/log/xray
+install -d -m 0755 /var/lib/nginx /var/log/nginx
 install -d -m 0755 /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
 
 # ------------------------------------------------------------ 安装 agent

@@ -14,27 +14,27 @@
 
 ```
 客户端 / 探针
-  │  连接 lisa.example.com:443，SNI = lisa.example.com
+  │  连接 panel.example.com:443，SNI = panel.example.com
   ▼
 Xray REALITY :443
   ├─ 带 REALITY 认证  ──> 正常代理出站
   └─ 没有认证的 TLS   ──> PROXY protocol ──> Nginx 127.0.0.1:8003
-                                                │ 用 lisa.example.com 的证书做本地 TLS
+                                                │ 用 panel.example.com 的证书做本地 TLS
                                                 └─ 反代 https://www.lovelive-anime.jp
 ```
 
 具体过程：
 
-1. 客户端连 443，SNI 是 `lisa.example.com`
+1. 客户端连 443，SNI 是 `panel.example.com`
 2. Xray 把 TLS 握手转给 `dest`，也就是本机 nginx 的 `127.0.0.1:8003`
-3. nginx 出示 `lisa.example.com` 的 Let's Encrypt 证书，完成 TLS
+3. nginx 出示 `panel.example.com` 的 Let's Encrypt 证书，完成 TLS
 4. 没有 REALITY 认证的连接，nginx 当成普通 HTTPS 请求，反代到上游真实网站
 5. 带 REALITY 认证的客户端，Xray 识别后直接按 VLESS 代理处理，不走 nginx
 
 所以从外面看：
 
-- 域名是 `lisa.example.com`
-- 证书是 `lisa.example.com` 的有效证书
+- 域名是 `panel.example.com`
+- 证书是 `panel.example.com` 的有效证书
 - 打开页面看到的是 `www.lovelive-anime.jp` 的内容
 - 没有明显代理特征，也不需要客户端先访问外部网站
 
@@ -43,7 +43,7 @@ Xray REALITY :443
 
 几个关键点：
 
-- SNI 必须是 `lisa.example.com`，不能填 `www.lovelive-anime.jp`；后者只是 nginx 反代的上游
+- SNI 必须是 `panel.example.com`，不能填 `www.lovelive-anime.jp`；后者只是 nginx 反代的上游
 - `dest` 必须是 `127.0.0.1:8003`，`xver` 选 v1（PROXY protocol）
 - nginx 用 `proxy_protocol` 接收 Xray 转来的连接，才能拿到真实客户端 IP
 - 443 归 Xray，8003 只监听回环，公网访问不到
@@ -54,11 +54,13 @@ Xray REALITY :443
 
 ## 开始前准备
 
+> 下面的 `panel.example.com` 和 `node2.example.com` 都是示例，换成你自己的域名。
+
 1. 一台 **Ubuntu 22.04 / 24.04** 或 **Debian 12 / 13** 的 VPS（主控；节点用同样的系统也可以）
 2. 一个域名，加一条 A 记录：
 
    ```
-   lisa.example.com  ->  主控服务器 IP
+   panel.example.com  ->  主控服务器 IP
    ```
 
 3. 放行端口：
@@ -91,18 +93,18 @@ sudo bash deploy/install.sh
 
 ## 第 2 步：给面板开 HTTPS
 
-先确认 `lisa.example.com` 已经解析到这台服务器。
+先确认 `panel.example.com` 已经解析到这台服务器。
 
 ```bash
 cd ~/one-panel
-sudo bash deploy/selfsteal.sh lisa.example.com
-sudo bash deploy/panel-https.sh lisa.example.com
+sudo bash deploy/selfsteal.sh panel.example.com
+sudo bash deploy/panel-https.sh panel.example.com
 ```
 
 然后浏览器打开：
 
 ```
-https://lisa.example.com:9443
+https://panel.example.com:9443
 ```
 
 第一次会让你创建管理员账号。
@@ -115,7 +117,7 @@ https://lisa.example.com:9443
 
 登录后进 **设置**：
 
-- **公网地址**：`lisa.example.com`
+- **公网地址**：`panel.example.com`
 - 其它保持默认
 
 保存。
@@ -132,7 +134,7 @@ https://lisa.example.com:9443
 | 所属服务器 | 本机 |
 | 传输 | Vision |
 | 端口 | 443 |
-| SNI | `lisa.example.com` |
+| SNI | `panel.example.com` |
 | 回落地址 | `127.0.0.1:8003` |
 | PROXY protocol | v1 |
 
@@ -161,13 +163,13 @@ ss -ltnp | grep ':443'
 **v2rayN / v2rayNG**（Base64）：
 
 ```
-https://lisa.example.com/sub/xxxxxxxx
+https://panel.example.com/sub/xxxxxxxx
 ```
 
 **Clash / FlClash / mihomo**（YAML）：
 
 ```
-https://lisa.example.com/sub/xxxxxxxx/clash
+https://panel.example.com/sub/xxxxxxxx/clash
 ```
 
 注意：订阅地址是**面板域名**，不是节点域名，也不是服务器 IP。

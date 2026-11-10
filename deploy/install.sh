@@ -156,6 +156,42 @@ EOF
     chmod 644 /usr/local/etc/xray/config.json
   fi
 
+  # 有些机器只有 xray 二进制，没有 systemd 服务；补一个，否则永远启动不了
+  if command -v xray >/dev/null 2>&1; then
+    getent group xray >/dev/null 2>&1 || groupadd --system xray 2>/dev/null || true
+    id -u xray >/dev/null 2>&1 || \
+      useradd --system --gid xray --no-create-home --shell /usr/sbin/nologin xray 2>/dev/null || true
+
+    if ! systemctl cat "${XRAY_SERVICE}.service" >/dev/null 2>&1; then
+      log "写入 Xray systemd 服务"
+      XRAY_BIN="$(command -v xray)"
+      cat >"/etc/systemd/system/${XRAY_SERVICE}.service" <<EOF
+[Unit]
+Description=Xray Service
+Documentation=https://xtls.github.io/
+After=network.target nss-lookup.target
+
+[Service]
+User=xray
+Group=xray
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=yes
+ExecStart=${XRAY_BIN} run -config /usr/local/etc/xray/config.json
+Restart=on-failure
+RestartPreventExitStatus=23
+LimitNPROC=10000
+LimitNOFILE=1000000
+RuntimeDirectory=xray
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      systemctl daemon-reload
+    fi
+  fi
+
   systemctl enable --now "${XRAY_SERVICE}" 2>/dev/null || \
     warn "无法启动 ${XRAY_SERVICE} 服务，请稍后手动检查"
 fi

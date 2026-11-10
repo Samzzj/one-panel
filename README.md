@@ -5,6 +5,53 @@
 
 ---
 
+## 原理：什么叫「自己偷自己」
+
+普通的 REALITY 是「偷别人」：回落目标填一个真实网站，比如 `www.lovelive-anime.jp`。
+没有通过 REALITY 认证的 TLS 连接，会被转给那个网站，探针看到的是别人的证书和页面。
+
+「自己偷自己」是把回落目标换成**本机的 Nginx**：
+
+```
+客户端 / 探针
+  │  连接 lisa.example.com:443，SNI = lisa.example.com
+  ▼
+Xray REALITY :443
+  ├─ 带 REALITY 认证  ──> 正常代理出站
+  └─ 没有认证的 TLS   ──> PROXY protocol ──> Nginx 127.0.0.1:8003
+                                                │ 用 lisa.example.com 的证书做本地 TLS
+                                                └─ 反代 https://www.lovelive-anime.jp
+```
+
+具体过程：
+
+1. 客户端连 443，SNI 是 `lisa.example.com`
+2. Xray 把 TLS 握手转给 `dest`，也就是本机 nginx 的 `127.0.0.1:8003`
+3. nginx 出示 `lisa.example.com` 的 Let's Encrypt 证书，完成 TLS
+4. 没有 REALITY 认证的连接，nginx 当成普通 HTTPS 请求，反代到上游真实网站
+5. 带 REALITY 认证的客户端，Xray 识别后直接按 VLESS 代理处理，不走 nginx
+
+所以从外面看：
+
+- 域名是 `lisa.example.com`
+- 证书是 `lisa.example.com` 的有效证书
+- 打开页面看到的是 `www.lovelive-anime.jp` 的内容
+- 没有明显代理特征，也不需要客户端先访问外部网站
+
+为什么叫「自己偷自己」：**证书和域名都是自己的，回落目标也是自己的 nginx**，
+不像传统 REALITY 那样去借别人网站的证书。
+
+几个关键点：
+
+- SNI 必须是 `lisa.example.com`，不能填 `www.lovelive-anime.jp`；后者只是 nginx 反代的上游
+- `dest` 必须是 `127.0.0.1:8003`，`xver` 选 v1（PROXY protocol）
+- nginx 用 `proxy_protocol` 接收 Xray 转来的连接，才能拿到真实客户端 IP
+- 443 归 Xray，8003 只监听回环，公网访问不到
+- 面板的 `/sub/` 也走这条回落：普通 HTTPS 请求到 `/sub/` 会被 nginx 反代到面板 8080。
+  节点机器没有面板，所以节点版 nginx 配置不包含 `/sub/`
+
+---
+
 ## 开始前准备
 
 1. 一台 **Ubuntu 22.04 / 24.04** 或 **Debian 12 / 13** 的 VPS（主控；节点用同样的系统也可以）

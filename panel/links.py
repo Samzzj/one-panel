@@ -92,6 +92,9 @@ def clash_proxy(node: dict, uuid: str, remark: str, host: str) -> dict[str, Any]
         "reality-opts": {
             "public-key": str(node.get("public_key") or ""),
             "short-id": _short_ids(node)[0],
+            # Xray 26.9+ 的 REALITY 默认使用 X25519MLKEM768；mihomo 必须显式开启，
+            # 否则会报 "REALITY authentication failed"，但回落 curl 仍然正常。
+            "support-x25519mlkem768": True,
         },
     }
     if transport == "xhttp":

@@ -76,6 +76,7 @@ class LinkTest(unittest.TestCase):
         self.assertTrue(proxy["tls"])
         self.assertEqual(proxy["reality-opts"]["public-key"], VISION["public_key"])
         self.assertEqual(proxy["reality-opts"]["short-id"], "ab12cd34")
+        self.assertTrue(proxy["reality-opts"]["support-x25519mlkem768"])
 
     def test_clash_xhttp(self) -> None:
         proxy = clash_proxy(XHTTP, UUID, "jp", "203.0.113.10")

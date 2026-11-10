@@ -189,9 +189,10 @@ systemctl enable --now xray 2>/dev/null || warn "无法启动 xray 服务"
 if [[ "${WITH_NGINX}" -eq 1 ]] && ! command -v nginx >/dev/null 2>&1; then
   log "安装 nginx"
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get install -y -qq nginx >/dev/null || warn "nginx 安装失败"
+    timeout 240 apt-get -o Acquire::ForceIPv4=true install -y -qq nginx >/dev/null || \
+      warn "nginx 安装失败（可重试：apt-get -o Acquire::ForceIPv4=true install -y nginx）"
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q nginx >/dev/null || warn "nginx 安装失败"
+    timeout 240 dnf --setopt=ip_resolve=4 install -y -q nginx >/dev/null || warn "nginx 安装失败"
   fi
   systemctl enable --now nginx 2>/dev/null || true
 fi
@@ -199,9 +200,10 @@ fi
 if [[ "${WITH_NGINX}" -eq 1 ]] && ! command -v certbot >/dev/null 2>&1; then
   log "安装 certbot（节点一键签证书用）"
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get install -y -qq certbot >/dev/null || warn "certbot 安装失败，可稍后手动安装"
+    timeout 240 apt-get -o Acquire::ForceIPv4=true install -y -qq certbot >/dev/null || \
+      warn "certbot 安装失败（可重试：apt-get -o Acquire::ForceIPv4=true install -y certbot）"
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q certbot >/dev/null || warn "certbot 安装失败，可稍后手动安装"
+    timeout 240 dnf --setopt=ip_resolve=4 install -y -q certbot >/dev/null || warn "certbot 安装失败"
   fi
 fi
 

@@ -274,7 +274,7 @@ else
   fi
 fi
 
-# 每 10 分钟检查一次过期 / 超额订阅；有变化才重启 Xray
+# 每分钟检查一次过期 / 超额订阅；有变化才重启 Xray
 cat >"/etc/systemd/system/${SERVICE_NAME}-sweep.service" <<EOF
 [Unit]
 Description=Reality Panel - disable expired or over-quota subscriptions
@@ -291,12 +291,12 @@ EOF
 
 cat >"/etc/systemd/system/${SERVICE_NAME}-sweep.timer" <<EOF
 [Unit]
-Description=Run Reality Panel sweep every 10 minutes
+Description=Run Reality Panel sweep every minute (quota / expiry enforcement)
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=10min
-AccuracySec=1min
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
 
 [Install]
 WantedBy=timers.target

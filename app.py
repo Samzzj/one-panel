@@ -236,6 +236,16 @@ def main(argv: list[str] | None = None) -> int:
             app.mark_dirty()
         # 有改动，或上次应用失败留下了 dirty 标记，都重新应用一次
         if app.store.meta("dirty", "0") == "1":
+            # 定时器现在是每分钟一次：如果上一轮 apply 刚失败过（典型是端口
+            # 被占用），不要每分钟重启一次 Xray 来回撞，冷却 10 分钟再说。
+            last = {}
+            try:
+                last = json.loads(app.store.meta("last_apply", "{}") or "{}")
+            except ValueError:
+                last = {}
+            if last.get("ok") is False and now() - int(last.get("at") or 0) < 600:
+                print(json.dumps({"changed": changed, "applied": False, "skipped": "recent-failure"}, ensure_ascii=False))
+                return 0
             result = app.apply_now()
             print(json.dumps({"changed": changed, "applied": result.get("ok")}, ensure_ascii=False))
         else:

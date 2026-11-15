@@ -105,8 +105,10 @@ fi
 install -d -m 0755 "${APP_DIR}"
 install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0700 "${DATA_DIR}"
 
-# 回落静态站、ACME webroot、白名单手工列表
-install -d -m 0755 /var/www/nav /var/www/nav-releases
+# 回落静态站的版本目录、ACME webroot、白名单手工列表。
+# 注意：不要预建 /var/www/nav —— 它是 nav-site.sh 管理的软链，
+# 预建目录会让 `ln -sfn` 把链接建到目录里面，首页直接 403。
+install -d -m 0755 /var/www/nav-releases
 install -d -m 0755 /var/www/acme
 install -d -m 0755 /etc/panel-guard.d
 

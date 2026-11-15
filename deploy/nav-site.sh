@@ -39,13 +39,24 @@ log()  { printf '\033[36m[nav-site]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[nav-site]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31m[nav-site]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# 把 SITE_DIR 指到某个版本目录。
+# 注意：如果 SITE_DIR 已经是个普通目录，`ln -sfn` 会把软链建到目录**里面**，
+# 结果 root 指向一个空目录、首页 403。所以先把旧目录删掉，再用 -T 强制替换。
+link_site() {
+  local target="$1"
+  if [ -d "${SITE_DIR}" ] && [ ! -L "${SITE_DIR}" ]; then
+    rm -rf "${SITE_DIR}"
+  fi
+  ln -sfnT "${target}" "${SITE_DIR}" 2>/dev/null || ln -sfn "${target}" "${SITE_DIR}"
+}
+
 [[ "${EUID}" -eq 0 ]] || die "请用 root 运行"
 
 # ------------------------------------------------------------ 回滚
 if [[ "${DOMAIN}" == "--rollback" ]]; then
   PREV="$(ls -1dt "${RELEASES}"/*/ 2>/dev/null | sed -n 2p || true)"
   [[ -n "${PREV}" ]] || die "没有可回滚的历史版本"
-  ln -sfn "${PREV%/}" "${SITE_DIR}"
+  link_site "${PREV%/}"
   systemctl reload nginx 2>/dev/null || true
   log "已回滚到 ${PREV%/}"
   exit 0
@@ -85,7 +96,7 @@ OLD_TARGET="$(readlink -f "${SITE_DIR}" 2>/dev/null || true)"
 OLD_CONF="$(mktemp)"
 cp -a "${CONF_PATH}" "${OLD_CONF}"
 
-ln -sfn "${RELEASE}" "${SITE_DIR}"
+link_site "${RELEASE}"
 log "已切换到 ${RELEASE}"
 
 # ------------------------------------------------------------ 生成配置
@@ -113,7 +124,7 @@ PY
 
 if ! grep -qE "^[[:space:]]*listen[[:space:]]+(127\.0\.0\.1|\[::1\]):" "${TMP_CONF}"; then
   rm -f "${TMP_CONF}"
-  ln -sfn "${OLD_TARGET}" "${SITE_DIR}"
+  if [[ -n "${OLD_TARGET}" ]]; then link_site "${OLD_TARGET}"; fi
   die "生成的配置没有绑定回环地址，已回滚"
 fi
 
@@ -122,7 +133,7 @@ rm -f "${TMP_CONF}"
 
 if ! nginx -t; then
   cp -a "${OLD_CONF}" "${CONF_PATH}"
-  if [[ -n "${OLD_TARGET}" ]]; then ln -sfn "${OLD_TARGET}" "${SITE_DIR}"; fi
+  if [[ -n "${OLD_TARGET}" ]]; then link_site "${OLD_TARGET}"; fi
   rm -f "${OLD_CONF}"
   die "nginx -t 未通过，配置与站点目录都已回滚"
 fi

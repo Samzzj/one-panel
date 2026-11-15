@@ -72,16 +72,27 @@ class App:
     # ------------------------------------------------------------ 状态
 
     def mark_dirty(self, dirty: bool = True) -> None:
+        if dirty:
+            # 版本号每次变更 +1。apply_now 只在「下发期间没有新变更」时才清 dirty，
+            # 否则 sweep 定时器（独立进程）会把面板刚提交的变更标成已应用，
+            # 出现「界面全绿、Xray 里还是旧配置」的假象。
+            epoch = int(self.store.meta("dirty_epoch", "0") or 0) + 1
+            self.store.set_meta("dirty_epoch", str(epoch))
         self.store.set_meta("dirty", "1" if dirty else "0")
         if dirty:
             self.schedule_apply()
 
     def apply_now(self) -> dict:
         """串行执行一次下发，并记录 last_apply / dirty。"""
+        epoch_before = self.store.meta("dirty_epoch", "0")
         with self._apply_lock:
             result = self.deployer.apply_all()
         if result.get("ok"):
-            self.store.set_meta("dirty", "0")
+            # 下发过程中如果又有人改了配置，dirty 必须留着，让下一轮再下发一次
+            if self.store.meta("dirty_epoch", "0") == epoch_before:
+                self.store.set_meta("dirty", "0")
+            else:
+                self.schedule_apply()
         self.store.set_meta(
             "last_apply",
             json.dumps(

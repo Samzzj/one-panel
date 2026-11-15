@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -34,6 +35,21 @@ from typing import Any
 
 AGENT_VERSION = "0.5.0"
 MAX_BODY = 2 * 1024 * 1024
+
+
+def _parse_allow(values: list[str]) -> tuple:
+    """把 --allow 的 CIDR 列表解析成网络对象；非法项直接报错退出。"""
+    networks = []
+    for raw in values:
+        for item in re.split(r"[\s,;]+", str(raw)):
+            item = item.strip()
+            if not item:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(item, strict=False))
+            except ValueError:
+                raise SystemExit(f"--allow 不是合法的 IP 或 CIDR: {item}")
+    return tuple(networks)
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")
 
 
@@ -87,6 +103,17 @@ class Agent:
         self.status_cmd = args.status_cmd
         self.nginx_dir = os.path.realpath(args.nginx_dir)
         self.started_at = now()
+        self.allow = _parse_allow(getattr(args, "allow", None) or [])
+
+    def peer_allowed(self, peer: str) -> bool:
+        """来源 IP 白名单。空列表 = 不限制（仅靠令牌，会打警告）。"""
+        if not self.allow:
+            return True
+        try:
+            addr = ipaddress.ip_address((peer or "").strip())
+        except ValueError:
+            return False
+        return any(addr in network for network in self.allow if network.version == addr.version)
 
     # ------------------------------------------------------------ Xray
 
@@ -351,6 +378,10 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _auth(self) -> bool:
+        # 先看来源 IP：白名单外的连接连令牌都不用比，避免把代理端口
+        # 暴露成「谁都能试令牌」的爆破面。
+        if not self.agent.peer_allowed(self.client_address[0]):
+            return False
         token = self.headers.get("X-Agent-Token", "")
         return bool(token) and hmac.compare_digest(token, self.agent.token)
 
@@ -473,6 +504,13 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("AGENT_STATUS_CMD", "systemctl is-active xray"),
     )
     parser.add_argument("--nginx-dir", default=os.environ.get("AGENT_NGINX_DIR", "/etc/nginx/conf.d"))
+    parser.add_argument(
+        "--allow",
+        action="append",
+        default=None,
+        metavar="CIDR",
+        help="只接受这些来源 IP（可重复）；不填则只靠令牌鉴权",
+    )
     parser.add_argument("--version", action="version", version=f"one-panel-agent {AGENT_VERSION}")
     args = parser.parse_args(argv)
 
@@ -480,9 +518,23 @@ def main(argv: list[str] | None = None) -> int:
         print("缺少 --token（或 AGENT_TOKEN）", file=sys.stderr)
         return 2
 
+    # 环境变量也支持 AGENT_ALLOW="1.2.3.4/32,5.6.7.0/24"
+    if not args.allow:
+        env_allow = os.environ.get("AGENT_ALLOW", "").strip()
+        args.allow = [env_allow] if env_allow else []
+
     agent = Agent(args)
     server = AgentServer((args.bind, args.port), agent)
     print(f"[agent] {AGENT_VERSION} listening on {args.bind}:{args.port}", flush=True)
+    if agent.allow:
+        print(f"[agent] 来源白名单: {', '.join(str(n) for n in agent.allow)}", flush=True)
+    else:
+        print(
+            "[agent] 警告：未设置 --allow，任何能访问该端口的地址都可以尝试令牌；"
+            "建议用 --allow <面板公网IP> 或防火墙只放行面板 IP",
+            file=sys.stderr,
+            flush=True,
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

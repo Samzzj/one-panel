@@ -868,7 +868,7 @@ function openServerModal(server) {
       m.close();
       if (!editing) {
         toast('服务器已添加');
-        showInstallCommand(result.server, result.token, result.install_url);
+        showInstallCommand(result.server, result.token, result.install_url, result.agent_allow);
       } else {
         toast('服务器已更新');
       }
@@ -884,8 +884,9 @@ function openServerModal(server) {
   });
 }
 
-function showInstallCommand(server, token, installUrl) {
-  const command = `curl -4 -fsSL ${installUrl} | sudo bash -s -- --token ${token} --with-nginx`;
+function showInstallCommand(server, token, installUrl, agentAllow) {
+  const allowFlag = agentAllow ? ` --allow ${agentAllow}` : '';
+  const command = `curl -4 -fsSL ${installUrl} | sudo bash -s -- --token ${token} --with-nginx${allowFlag}`;
   const m = openModal({
     title: `在「${server.name}」上安装 agent`,
     wide: true,
@@ -1362,7 +1363,7 @@ function subForm(sub) {
 
     <div class="form-row">
       <div class="field"><label>有效期（天）</label>
-        <input class="input" type="number" name="expires_days" min="1" max="36500" value="${remainingDays}" ${permanent ? 'disabled' : ''}>
+        <input class="input" type="number" name="expires_days" min="1" max="36500" value="${remainingDays || ''}" ${permanent ? 'disabled' : ''}>
         <label class="check-item" style="margin-top:8px">
           <input type="checkbox" name="permanent" ${permanent ? 'checked' : ''}>
           <span>永久有效</span>
@@ -1394,7 +1395,7 @@ function openSubModal(sub) {
   if (permBox && daysBox) {
     permBox.onchange = () => {
       daysBox.disabled = permBox.checked;
-      if (permBox.checked) daysBox.value = '0';
+      if (permBox.checked) daysBox.value = '';
     };
   }
 

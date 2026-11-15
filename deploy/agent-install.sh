@@ -10,6 +10,7 @@
 # 可选参数：
 #   --port 8787            监听端口
 #   --bind 0.0.0.0         监听地址（建议配合防火墙只放行面板 IP）
+#   --allow 1.2.3.4/32     只接受这些来源 IP，可重复；不填只靠令牌鉴权
 #   --xray-config PATH     默认 /usr/local/etc/xray/config.json
 #   --nginx-dir PATH       默认 /etc/nginx/conf.d
 #   --no-xray              不自动安装 Xray
@@ -24,6 +25,7 @@ set -euo pipefail
 TOKEN="${AGENT_TOKEN:-}"
 PORT="${AGENT_PORT:-8787}"
 BIND="${AGENT_BIND:-0.0.0.0}"
+ALLOW="${AGENT_ALLOW:-}"
 XRAY_CONFIG="${AGENT_XRAY_CONFIG:-/usr/local/etc/xray/config.json}"
 NGINX_DIR="${AGENT_NGINX_DIR:-/etc/nginx/conf.d}"
 INSTALL_XRAY=1
@@ -45,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --token) TOKEN="${2:?}"; shift 2 ;;
     --port) PORT="${2:?}"; shift 2 ;;
     --bind) BIND="${2:?}"; shift 2 ;;
+    --allow) ALLOW="${2:?}"; shift 2 ;;
     --xray-config) XRAY_CONFIG="${2:?}"; shift 2 ;;
     --nginx-dir) NGINX_DIR="${2:?}"; shift 2 ;;
     --repo) RAW_BASE="${2%/}"; shift 2 ;;
@@ -236,6 +239,7 @@ cat >"${ENV_FILE}" <<EOF
 AGENT_TOKEN=${TOKEN}
 AGENT_BIND=${BIND}
 AGENT_PORT=${PORT}
+AGENT_ALLOW=${ALLOW}
 AGENT_XRAY_CONFIG=${XRAY_CONFIG}
 AGENT_NGINX_DIR=${NGINX_DIR}
 EOF

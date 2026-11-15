@@ -553,11 +553,16 @@ def create_server(app, req: Request) -> dict:
         raise ApiError(400, "Agent 地址必填，例如 http://1.2.3.4:8787")
     server = app.store.create_server(payload)
     _audit(app, req, "添加服务器", server["name"], server["agent_url"])
+    # 面板自己有固定公网 IP 时，顺手把 agent 的来源白名单填成这个 IP，
+    # 免得节点上的 8787 对全网开放、只靠一个静态令牌。
+    panel_host = (app.store.public_host() or "").strip()
+    agent_allow = f"{panel_host}/32" if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", panel_host) else ""
     return {
         "ok": True,
         "server": _public_server(server),
         "token": server["token"],
         "install_url": AGENT_INSTALL_URL,
+        "agent_allow": agent_allow,
     }
 
 
@@ -805,6 +810,13 @@ def subscription(app, req: Request, token: str, clash: str = "") -> Response:
     if sub["expires_at"] and sub["expires_at"] < now():
         raise ApiError(403, "订阅已到期")
 
+    up = sum(int(c.get("up_bytes") or 0) for c in sub["clients"])
+    down = sum(int(c.get("down_bytes") or 0) for c in sub["clients"])
+    # 额度不能只靠 sweep 定时器（10 分钟一次）：这中间照样能继续拉订阅。
+    quota = int(sub["quota_bytes"] or 0)
+    if quota and up + down >= quota:
+        raise ApiError(403, "流量额度已用尽")
+
     host = app.store.public_host()
     want_clash = (
         bool(clash)
@@ -813,8 +825,6 @@ def subscription(app, req: Request, token: str, clash: str = "") -> Response:
         or any(mark in (req.headers.get("user-agent") or "").lower() for mark in ("clash", "mihomo", "stash"))
     )
 
-    up = sum(int(c.get("up_bytes") or 0) for c in sub["clients"])
-    down = sum(int(c.get("down_bytes") or 0) for c in sub["clients"])
     settings = app.store.settings()
     headers = {
         "Profile-Update-Interval": settings.get("sub_interval_hours") or "12",
@@ -1119,11 +1129,10 @@ def import_data(app, req: Request) -> dict:
     except (TypeError, ValueError) as exc:
         raise ApiError(400, f"备份内容不合法：{exc}")
 
-    stats = app.store.import_backup(
-        {"servers": servers, "nodes": nodes, "subs": subs, "clients": clients}
-    )
-
+    # 先把设置校验完再动数据：校验放在导入之后的话，一旦被拒就会留下
+    # 一份「服务器/节点已经导进去了、设置没生效」的半成品状态。
     settings = data.get("settings")
+    clean: dict[str, str] = {}
     if isinstance(settings, dict):
         clean = {
             key: str(value)
@@ -1134,7 +1143,12 @@ def import_data(app, req: Request) -> dict:
             # 备份里的设置同样要过校验：否则恢复一份不含当前 IP 的白名单，
             # 30 秒后 nft 规则落地，9443 立刻把操作者关在门外。
             _validate_settings(app, req, clean)
-            app.store.save_settings(clean)
+
+    stats = app.store.import_backup(
+        {"servers": servers, "nodes": nodes, "subs": subs, "clients": clients}
+    )
+    if clean:
+        app.store.save_settings(clean)
 
     app.mark_dirty()
     _audit(app, req, "恢复备份", "", f"{stats['servers']} 服务器 / {stats['nodes']} 节点 / {stats['subs']} 订阅")

@@ -260,8 +260,11 @@ node2.example.com  ->  第二台服务器 IP
 
 ```bash
 curl -4 -fsSL https://raw.githubusercontent.com/Samzzj/one-panel/main/deploy/agent-install.sh \
-  | sudo bash -s -- --token <令牌> --with-nginx
+  | sudo bash -s -- --token <令牌> --with-nginx --allow <面板公网IP>/32
 ```
+
+> `--allow` 是来源 IP 白名单：agent 端口只接受面板来连，别人扫到 8787 也拿不到响应。
+> 面板有固定公网 IP 时，安装命令会自动带上它。
 
 ### 3. 一键初始化
 

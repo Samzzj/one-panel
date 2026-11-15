@@ -113,5 +113,90 @@ class ApiAddressTest(unittest.TestCase):
         self.assertEqual(_api_address({}), ("127.0.0.1", 10085))
 
 
+class AgentAllowTest(unittest.TestCase):
+    def agent(self, allow):
+        import argparse
+
+        from agent import Agent
+
+        args = argparse.Namespace(
+            token="t",
+            xray_bin="xray",
+            xray_config="/tmp/x.json",
+            xray_api="127.0.0.1:10085",
+            restart_cmd="true",
+            status_cmd="true",
+            nginx_dir="/tmp",
+            allow=allow,
+        )
+        return Agent(args)
+
+    def test_empty_allow_permits_everything(self) -> None:
+        self.assertTrue(self.agent([]).peer_allowed("1.2.3.4"))
+
+    def test_cidr_match(self) -> None:
+        subject = self.agent(["10.0.0.0/8"])
+        self.assertTrue(subject.peer_allowed("10.9.8.7"))
+        self.assertFalse(subject.peer_allowed("11.0.0.1"))
+
+    def test_multiple_entries_and_comma(self) -> None:
+        subject = self.agent(["10.0.0.0/8, 192.168.1.5"])
+        self.assertTrue(subject.peer_allowed("192.168.1.5"))
+        self.assertFalse(subject.peer_allowed("192.168.1.6"))
+
+    def test_bad_cidr_exits(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.agent(["not-a-cidr"])
+
+
+class SubscriptionQuotaTest(unittest.TestCase):
+    def test_over_quota_rejected(self) -> None:
+        from panel.api import subscription
+
+        sub = {
+            "id": 1,
+            "name": "x",
+            "enabled": 1,
+            "expires_at": 0,
+            "quota_bytes": 100,
+            "clients": [{"up_bytes": 60, "down_bytes": 50, "node_id": 1}],
+        }
+        app = SimpleNamespace(store=_SubStore(sub))
+        req = SimpleNamespace(query={}, headers={}, client_ip="203.0.113.1")
+        with self.assertRaises(ApiError) as ctx:
+            subscription(app, req, "tok")
+        self.assertIn("流量", str(ctx.exception))
+
+    def test_under_quota_still_served(self) -> None:
+        from panel.api import subscription
+
+        sub = {
+            "id": 1,
+            "name": "x",
+            "enabled": 1,
+            "expires_at": 0,
+            "quota_bytes": 100,
+            "clients": [{"up_bytes": 10, "down_bytes": 10, "node_id": 1}],
+        }
+        app = SimpleNamespace(store=_SubStore(sub))
+        req = SimpleNamespace(query={"format": "clash"}, headers={}, client_ip="203.0.113.1")
+        resp = subscription(app, req, "tok")
+        self.assertEqual(resp.status, 200)
+
+
+class _SubStore:
+    def __init__(self, sub: dict) -> None:
+        self.sub = sub
+
+    def sub_by_token(self, token: str):
+        return self.sub if token == "tok" else None
+
+    def public_host(self) -> str:
+        return "example.com"
+
+    def settings(self) -> dict:
+        return {}
+
+
 if __name__ == "__main__":
     unittest.main()

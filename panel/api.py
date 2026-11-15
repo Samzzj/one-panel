@@ -421,11 +421,49 @@ def state(app, req: Request) -> dict:
 # ---------------------------------------------------------------- 节点
 
 
+def _reserved_ports(app) -> dict[int, str]:
+    """本机被面板自身 / nginx 回落 / Xray API 占用的端口。
+
+    节点的端口冲突检查只看数据库里的节点，不查这些系统端口；而
+    `xray run -test` 不会 bind，选错端口要等重启才炸。这里提前拦住。
+    """
+    settings = app.store.settings()
+    labels: dict[int, str] = {}
+
+    def add(value: str, label: str) -> None:
+        raw = (value or "").strip()
+        if ":" not in raw:
+            return
+        _, _, port = raw.rpartition(":")
+        try:
+            labels[int(port)] = label
+        except ValueError:
+            return
+
+    add(settings.get("nginx_listen") or "", "nginx 回落监听")
+    add(settings.get("panel_addr") or "", "面板自身")
+    add(settings.get("xray_api") or "", "Xray API")
+    return labels
+
+
+def _check_reserved_port(app, port: int, server_id: int) -> None:
+    server = app.store.server(server_id)
+    if not server or server.get("kind") != "local":
+        return
+    labels = _reserved_ports(app)
+    if int(port) in labels:
+        raise ApiError(
+            400,
+            f"端口 {port} 已被{labels[int(port)]}占用，节点不能选这个端口",
+        )
+
+
 def create_node(app, req: Request) -> dict:
     data = req.json()
     payload = _node_payload(data)
     if not app.store.server(int(payload["server_id"])):
         raise ApiError(400, "服务器不存在")
+    _check_reserved_port(app, int(payload["port"]), int(payload["server_id"]))
     conflict = app.store.node_by_port(payload["port"], int(payload["server_id"]))
     if conflict:
         server = app.store.server(int(payload["server_id"]))
@@ -460,6 +498,7 @@ def update_node(app, req: Request, node_id: str) -> dict:
         raise ApiError(400, "服务器不存在")
     if "port" in payload or "server_id" in payload:
         port = int(payload.get("port", node["port"]))
+        _check_reserved_port(app, port, target_server)
         conflict = app.store.node_by_port(port, target_server, exclude_id=nid)
         if conflict:
             server = app.store.server(target_server)
@@ -689,6 +728,9 @@ def rotate_sub(app, req: Request, sub_id: str) -> dict:
     if not sub:
         raise ApiError(404, "订阅不存在")
     updated = app.store.rotate_sub(sid)
+    # token 和所有 UUID 都换了，必须下发一次，否则旧凭据在 Xray 里依然有效，
+    # 「重置订阅」的吊销承诺就是假的。
+    app.mark_dirty()
     _audit(app, req, "重置订阅", sub["name"], "token 与 UUID 全部更新")
     return {"ok": True, "sub": updated}
 

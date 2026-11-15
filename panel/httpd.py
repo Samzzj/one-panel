@@ -169,18 +169,25 @@ class Handler(BaseHTTPRequestHandler):
     # --------------------------------------------------------- 分发
 
     def _client_ip(self) -> str:
-        # 默认只信任本机反代；面板建议用 SSH 隧道访问
-        if self.client_address[0] in ("127.0.0.1", "::1"):
-            cf = (self.headers.get("CF-Connecting-IP") or "").strip()
-            if cf:
-                return cf
-            forwarded = self.headers.get("X-Forwarded-For", "")
-            if forwarded:
-                return forwarded.split(",")[0].strip()
-            real = (self.headers.get("X-Real-IP") or "").strip()
-            if real:
-                return real
-        return self.client_address[0]
+        """取真实客户端 IP。
+
+        只有请求来自本机反代（nginx / SSH 隧道）时才相信转发头，并且只信
+        X-Real-IP：我们的 nginx 配置用 `proxy_set_header X-Real-IP $remote_addr`
+        覆盖同名头，客户端伪造不了。X-Forwarded-For 只取最后一段 —— nginx 用
+        `$proxy_add_x_forwarded_for` 追加真实地址，前面全是客户端自己塞的。
+        Cloudflare 用户应在 nginx 里用 real_ip 模块把 $remote_addr 改成真实 IP，
+        而不是让面板直接信任 CF-Connecting-IP（那个头同样可以伪造）。
+        """
+        peer = self.client_address[0]
+        if peer not in ("127.0.0.1", "::1"):
+            return peer
+        real = (self.headers.get("X-Real-IP") or "").strip()
+        if real:
+            return real
+        forwarded = (self.headers.get("X-Forwarded-For") or "").strip()
+        if forwarded:
+            return forwarded.split(",")[-1].strip()
+        return peer
 
     def _read_body(self) -> bytes:
         try:

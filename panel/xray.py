@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 from typing import Any
@@ -43,6 +44,29 @@ def _api_address(settings: dict[str, str]) -> tuple[str, int]:
     if not host:
         return "127.0.0.1", 10085
     return host, int(port)
+
+
+def _snapshot(path: str) -> str | None:
+    """把现有配置复制一份到同目录，返回快照路径；没有旧配置时返回 None。"""
+    if not path or not os.path.exists(path):
+        return None
+    backup = f"{path}.panel-bak"
+    try:
+        shutil.copy2(path, backup)
+        return backup
+    except OSError:
+        return None
+
+
+def _restore(path: str, backup: str | None) -> bool:
+    """用快照覆盖回配置；成功返回 True。"""
+    if not backup or not os.path.exists(backup):
+        return False
+    try:
+        shutil.copy2(backup, path)
+        return True
+    except OSError:
+        return False
 
 
 def _client_entry(client: dict, transport: str) -> dict:
@@ -255,6 +279,9 @@ class Xray:
             "test_output": "",
             "restarted": False,
             "restart_output": "",
+            "backup": None,
+            "rolled_back": False,
+            "rolled_back_restarted": False,
             "ok": False,
         }
 
@@ -269,6 +296,13 @@ class Xray:
             if not ok:
                 result["ok"] = False
                 return result
+
+        # `xray run -test` 只校验 JSON，不会真的 bind 端口：
+        # 端口撞上 nginx 回落 / 面板 / Xray API 时，只有重启这一步才会失败。
+        # 所以写盘前必须先留一份快照，失败时能退回上一份，否则新配置会把
+        # 唯一一份能用的配置覆盖掉，用户从此一直掉线。
+        backup = _snapshot(path)
+        result["backup"] = backup
 
         try:
             # Xray 官方 systemd 服务以 nobody 运行，配置必须对其他用户可读
@@ -293,7 +327,23 @@ class Xray:
             result["warnings"].append(f"重启命令执行失败：{exc}")
         result["ok"] = result["restarted"]
         if not result["restarted"]:
-            result["warnings"].append("配置已写入，但 Xray 重启失败，请查看系统日志。")
+            if _restore(path, backup):
+                result["rolled_back"] = True
+                result["warnings"].append(
+                    "新配置重启失败，已回滚到上一份配置；请检查节点端口是否与 "
+                    "nginx 回落端口 / 面板端口 / Xray API 端口冲突。"
+                )
+                try:
+                    retry = self._run(shlex.split(command), timeout=40)
+                    result["rolled_back_restarted"] = retry.returncode == 0
+                    if not result["rolled_back_restarted"]:
+                        result["warnings"].append("回滚后 Xray 仍无法启动，请立即查看系统日志。")
+                except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                    result["warnings"].append(f"回滚后重启命令执行失败：{exc}")
+            else:
+                result["warnings"].append(
+                    "配置已写入，但 Xray 重启失败，而且没有找到可回滚的旧配置。"
+                )
         return result
 
     # ------------------------------------------------------------ 统计

@@ -590,7 +590,7 @@ function viewDashboard() {
   const dest = first ? first.dest : (STATE.settings.dest || '127.0.0.1:8003');
   const isStatic = STATE.settings.site_mode === 'static';
   const siteRoot = STATE.settings.site_root || '/var/www/nav';
-  const upstream = (STATE.settings.nginx_upstream || 'https://www.lovelive-anime.jp').replace(/^https?:\/\//, '');
+  const upstream = (STATE.settings.nginx_upstream || '').replace(/^https?:\/\//, '');
   const fallbackTitle = isStatic ? '本机静态站点' : '反向代理';
   const fallbackDesc = isStatic
     ? `直接返回 <code>${esc(siteRoot)}</code> 下的页面，内容完全是你自己的`
@@ -1811,7 +1811,7 @@ function viewSettings() {
             ${settingsField('site_root', '站点目录', '静态站根目录，由 nav-site.sh 部署', 'text', '/var/www/nav')}
           </div>
           <div id="field-upstream" style="${STATE.settings.site_mode === 'static' ? 'display:none' : ''}">
-            ${settingsField('nginx_upstream', '伪装上游站点', '仅反代模式生效；静态模式下这个值会被忽略', 'text', 'https://www.lovelive-anime.jp')}
+            ${settingsField('nginx_upstream', '伪装上游站点', '仅反代模式生效；静态模式下这个值会被忽略', 'text', 'https://www.example.org')}
           </div>
         </div>
         <div>

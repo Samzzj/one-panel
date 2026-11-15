@@ -380,7 +380,8 @@ def plan(settings: dict[str, str], node: dict | None = None, local: bool = True)
     if mode == "static":
         upstream = ""
     else:
-        upstream = settings.get("nginx_upstream") or "https://www.lovelive-anime.jp"
+        # 没填就留空，让 render_selfsteal 报「上游站点地址无效」，而不是偷偷代理一个默认站点
+        upstream = settings.get("nginx_upstream") or ""
     listen_addr = settings.get("nginx_listen") or "127.0.0.1:8003"
     cert_dir = settings.get("cert_dir") or "/etc/letsencrypt/live"
     panel_addr = settings.get("panel_addr") or "127.0.0.1:8080"

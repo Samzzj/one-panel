@@ -1,12 +1,7 @@
 # ============================================================
 # 由 Reality Panel 生成 —— 重新生成会覆盖本文件
-# 链路: Xray REALITY -> PROXY protocol -> 127.0.0.1:8003 -> 本地 TLS -> 反代 www.lovelive-anime.jp
+# 链路: Xray REALITY -> PROXY protocol -> 127.0.0.1:8003 -> 本地 TLS -> 静态站 /var/www/nav
 # ============================================================
-
-map $http_upgrade $reality_connection_upgrade {
-    default upgrade;
-    ''      close;
-}
 
 server {
     listen 127.0.0.1:8003 ssl proxy_protocol http2;
@@ -27,14 +22,6 @@ server {
 
     # 不暴露这是代理：隐藏常见指纹头
     server_tokens off;
-    proxy_hide_header Alt-Svc;
-    proxy_hide_header Content-Security-Policy;
-    proxy_hide_header X-Frame-Options;
-    proxy_hide_header Strict-Transport-Security;
-
-    # ---- 上游真实站点 ----
-    resolver 223.5.5.5 119.29.29.29 1.1.1.1 ipv6=off valid=300s;
-    set $reality_upstream "www.lovelive-anime.jp";
 
     # ---- 订阅入口 ----
     # 普通 HTTPS 请求（浏览器 / 客户端拉订阅）没有 REALITY 认证数据，
@@ -49,33 +36,35 @@ server {
         proxy_read_timeout 30s;
     }
 
+    # ---- 本地静态站（deploy/nav-site.sh 部署）----
+    root  /var/www/nav;
+    index index.html;
+    charset utf-8;
+
+    gzip              on;
+    gzip_min_length   1024;
+    gzip_comp_level   4;
+    gzip_types        text/plain text/css application/javascript application/json
+                      image/svg+xml application/xml text/xml;
+
+    # HTML 不缓存：改完内容立刻生效
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # 用站点自己的 404 页面，避免露出 nginx 默认页
+    error_page 404 /404.html;
+    location = /404.html {
+        internal;
+    }
+
+    location ~* \.(?:css|js|mjs|jpg|jpeg|png|gif|svg|webp|avif|ico|woff2?|ttf|eot|map)$ {
+        expires 1h;
+        add_header Cache-Control "public";
+        access_log off;
+    }
+
     location / {
-        proxy_pass https://$reality_upstream$request_uri;
-        proxy_http_version 1.1;
-
-        # 上游也走 SNI，且证书按上游域名校验失败时不至于 502（上游本身是可信站点）
-        proxy_ssl_server_name on;
-        proxy_ssl_name $reality_upstream;
-
-        proxy_set_header Host              $reality_upstream;
-        proxy_set_header User-Agent        $http_user_agent;
-        proxy_set_header Accept-Language   $http_accept_language;
-        proxy_set_header Referer           https://www.lovelive-anime.jp$request_uri;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        $reality_connection_upgrade;
-
-        # 关掉压缩，sub_filter 才能改写 HTML 里的绝对链接
-        proxy_set_header Accept-Encoding   "";
-
-        # 把上游的绝对地址改写成当前域名，页面资源才不会漏到真实站点
-        sub_filter_once off;
-        sub_filter 'https://www.lovelive-anime.jp' 'https://$host';
-        proxy_redirect ~^https?://www\.lovelive\-anime\.jp(/.*)?$ https://$host$1;
-
-        proxy_buffering off;
-        proxy_read_timeout 60s;
-        proxy_connect_timeout 10s;
+        try_files $uri $uri/ =404;
     }
 }

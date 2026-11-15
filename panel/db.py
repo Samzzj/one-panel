@@ -44,6 +44,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "nginx_listen": "127.0.0.1:8003",
     "panel_addr": "127.0.0.1:8080",
     "cert_dir": "/etc/letsencrypt/live",
+    # 回落站点模式：proxy=反代外部站点，static=托管本地静态站
+    "site_mode": "proxy",
+    "site_root": "/var/www/nav",
+    # ACME HTTP-01 的 webroot，由 nginx 在 80 端口应答
+    "acme_webroot": "/var/www/acme",
     # 订阅
     "sub_base": "",
     "sub_interval_hours": "12",

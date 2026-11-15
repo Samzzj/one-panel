@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 
 from panel.nginx import plan, render_selfsteal, valid_domain, valid_hostport
 
@@ -86,16 +88,109 @@ class PlanTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("SNI", result["error"])
 
-    def test_plan_dest_mismatch_warns(self) -> None:
+    def test_plan_dest_mismatch_fails(self) -> None:
         node = {"sni": "node.example.com", "dest": "127.0.0.1:9999", "xver": 1}
         result = plan(SETTINGS, node)
-        self.assertTrue(any("dest" in warning for warning in result["warnings"]))
+        self.assertFalse(result["ok"])
+        self.assertIn("dest", result["error"])
+        self.assertTrue(any(c["id"] == "dest-mismatch" for c in result["checks"]))
+
+    def test_plan_static_mode(self) -> None:
+        settings = {**SETTINGS, "site_mode": "static", "site_root": "/var/www/nav"}
+        node = {"sni": "node.example.com", "dest": "127.0.0.1:8003", "xver": 1}
+        result = plan(settings, node)
+        self.assertEqual(result["mode"], "static")
+        self.assertEqual(result["site_root"], "/var/www/nav")
+        self.assertIn("root  /var/www/nav;", result["conf"])
+        self.assertNotIn("sub_filter", result["conf"])
+
+    def test_plan_remote_skips_host_checks(self) -> None:
+        node = {"sni": "node.example.com", "dest": "127.0.0.1:8003", "xver": 1}
+        result = plan(SETTINGS, node, local=False)
+        self.assertTrue(result["ok"], result["error"])
+        self.assertFalse(any(c["id"] in ("xray-config", "cert") for c in result["checks"]))
+
+    def test_plan_detects_servernames_mismatch(self) -> None:
+        """本机 config.json 里的 serverNames 与 SNI 不一致时必须拦住。"""
+        config = Path(__file__).with_name("_xray_config_fixture.json")
+        config.write_text(
+            json.dumps(
+                {
+                    "inbounds": [
+                        {
+                            "port": 443,
+                            "streamSettings": {
+                                "security": "reality",
+                                "realitySettings": {
+                                    "serverNames": ["other.example.com"],
+                                    "dest": "127.0.0.1:8003",
+                                    "xver": 1,
+                                },
+                            },
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: config.unlink(missing_ok=True))
+
+        node = {"sni": "node.example.com", "dest": "127.0.0.1:8003", "xver": 1}
+        result = plan({**SETTINGS, "xray_config": str(config)}, node)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any(c["id"] == "servernames" for c in result["checks"]))
+        self.assertIn("serverNames", result["error"])
 
     def test_validators(self) -> None:
         self.assertTrue(valid_domain("node.example.com"))
         self.assertFalse(valid_domain("-bad.example.com"))
         self.assertTrue(valid_hostport("127.0.0.1:8003"))
         self.assertFalse(valid_hostport("127.0.0.1"))
+
+
+class StaticSiteTest(unittest.TestCase):
+    def _render(self, **kwargs) -> str:
+        return render_selfsteal(
+            "node.example.com",
+            "https://www.lovelive-anime.jp",
+            "127.0.0.1:8003",
+            "/etc/letsencrypt/live",
+            1,
+            "127.0.0.1:8080",
+            **kwargs,
+        )
+
+    def test_static_root_and_fallback(self) -> None:
+        conf = self._render(site_root="/var/www/nav")
+        self.assertIn("root  /var/www/nav;", conf)
+        self.assertIn("try_files $uri $uri/ =404;", conf)
+        self.assertIn("location ^~ /sub/ {", conf)
+        self.assertNotIn("resolver", conf)
+        self.assertNotIn("proxy_pass https://", conf)
+        self.assertNotIn("proxy_pass https://$reality_upstream", conf)
+        self.assertNotIn("map $http_upgrade", conf)
+
+    def test_static_keeps_tls_and_hides_version(self) -> None:
+        conf = self._render(site_root="/var/www/nav")
+        self.assertIn("ssl_protocols       TLSv1.2 TLSv1.3;", conf)
+        self.assertIn("server_tokens off;", conf)
+        self.assertIn("listen 127.0.0.1:8003 ssl proxy_protocol http2;", conf)
+
+    def test_site_root_injection_rejected(self) -> None:
+        for bad in ("/var/www/nav; rm -rf /", "var/www/nav", "/var/www/../etc", "/var/www/na v"):
+            with self.assertRaises(ValueError):
+                self._render(site_root=bad)
+
+
+class LoopbackTest(unittest.TestCase):
+    def test_public_listen_rejected(self) -> None:
+        for addr in ("0.0.0.0:8003", "*:8003", "192.168.1.10:8003", "[::]:8003"):
+            with self.assertRaises(ValueError):
+                render_selfsteal("node.example.com", "https://example.org", addr, "/c", 1, "127.0.0.1:8080")
+
+    def test_ipv6_loopback_allowed(self) -> None:
+        conf = render_selfsteal("node.example.com", "https://example.org", "[::1]:8003", "/c", 1, "127.0.0.1:8080")
+        self.assertIn("listen [::1]:8003 ssl proxy_protocol http2;", conf)
 
 
 if __name__ == "__main__":

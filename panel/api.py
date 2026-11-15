@@ -598,11 +598,13 @@ def selfsteal_server(app, req: Request, server_id: str) -> dict:
             settings.get("nginx_upstream") or "https://www.lovelive-anime.jp",
             settings.get("nginx_listen") or "127.0.0.1:8003",
             settings.get("cert_dir") or "/etc/letsencrypt/live",
-            1,
+            # 必须与节点一致：节点 xver=0 时 nginx 不能等 PROXY protocol 头
+            int(settings.get("xver") or 1),
             settings.get("panel_addr") or "127.0.0.1:8080",
             include_sub=False,
+            site_root=(settings.get("site_root") or "") if settings.get("site_mode") == "static" else "",
         )
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise ApiError(400, str(exc))
 
     result = AgentClient(server).selfsteal(
@@ -819,9 +821,11 @@ def selfsteal(app, req: Request) -> dict:
     if node is None:
         nodes = app.store.nodes()
         node = nodes[0] if nodes else None
-    result = nginx_plan(settings, node)
+    server = app.store.server(node["server_id"]) if node else None
+    # 只有本机节点才读本机 config.json / 证书做比对
+    is_local = server is None or server.get("kind") == "local"
+    result = nginx_plan(settings, node, local=is_local)
     if node:
-        server = app.store.server(node["server_id"])
         result["server"] = _public_server(server) if server else None
         result["node"] = {"id": node["id"], "name": node["name"], "server_id": node["server_id"]}
     return result
@@ -846,7 +850,7 @@ def selfsteal_apply(app, req: Request) -> dict:
             "本机 Nginx 请按向导手动写入（面板没有 nginx 写权限）；这个按钮用于远程服务器",
         )
     settings = app.store.settings()
-    plan = nginx_plan(settings, node)
+    plan = nginx_plan(settings, node, local=False)
     if not plan.get("ok"):
         raise ApiError(400, plan.get("error") or "配置生成失败")
     result = app.deployer.push_nginx(server, plan["conf"], settings.get("nginx_conf") or "/etc/nginx/conf.d/reality-selfsteal.conf")
@@ -871,6 +875,20 @@ def update_settings(app, req: Request) -> dict:
         raise ApiError(400, "默认 SNI 必须是合法域名")
     if "nginx_listen" in payload and not valid_hostport(payload["nginx_listen"]):
         raise ApiError(400, "nginx 监听地址格式应为 host:port")
+    if "nginx_listen" in payload:
+        host = payload["nginx_listen"].rpartition(":")[0].strip("[]")
+        if host not in ("127.0.0.1", "::1"):
+            raise ApiError(
+                400,
+                "回落监听必须绑定回环地址（127.0.0.1:<端口>）；"
+                "监听 0.0.0.0 会让公网直接访问该端口并暴露源站证书",
+            )
+    if "site_mode" in payload and payload["site_mode"] not in ("proxy", "static"):
+        raise ApiError(400, "回落模式只能是 proxy 或 static")
+    for key in ("site_root", "acme_webroot"):
+        if key in payload and payload[key]:
+            if not payload[key].startswith("/") or ".." in payload[key].split("/"):
+                raise ApiError(400, f"{key} 必须是以 / 开头的绝对路径")
     if "nginx_upstream" in payload:
         upstream = payload["nginx_upstream"]
         if not upstream.startswith(("http://", "https://")):

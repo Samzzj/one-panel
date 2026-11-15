@@ -8,6 +8,13 @@
 #
 # 原理：nginx 监听 9443（TLS，用你已有的 Let's Encrypt 证书），
 # 反代到 127.0.0.1:8080 的面板。443 仍然归 Xray REALITY，互不影响。
+#
+# 访问控制分两层，缺一不可：
+#   1. nftables 在 TCP 层丢弃非白名单来源（deploy/panel-guard.sh）
+#      —— 扫描器看不到这个端口，也拿不到证书
+#   2. nginx 的 geo 判断，命中非白名单直接 return 444（断连，无响应）
+#      —— 防火墙规则丢失或 OpenVZ 无 nft 时的兜底
+# 白名单真源是面板设置里的「访问白名单」，guard 定时同步落地。
 # ------------------------------------------------------------
 set -euo pipefail
 
@@ -16,6 +23,8 @@ PORT="${2:-9443}"
 PANEL_ADDR="${PANEL_ADDR:-127.0.0.1:8080}"
 CONF="/etc/nginx/conf.d/one-panel-admin.conf"
 CERT_DIR="${CERT_DIR:-/etc/letsencrypt/live}"
+GUARD_CONF="/etc/nginx/conf.d/panel-guard.conf"
+DATA_DIR="${DATA_DIR:-/var/lib/reality-panel}"
 
 log()  { printf '\033[36m[panel-https]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[panel-https]\033[0m %s\n' "$*" >&2; }
@@ -37,12 +46,42 @@ fi
 [[ "${PORT}" -ge 1 && "${PORT}" -le 65535 ]] || die "端口超出范围"
 [[ "${PORT}" != "443" ]] || die "443 被 Xray REALITY 占用，请换一个端口（默认 9443）"
 
+# ---- 回落端口绝对不能让管理入口占用：那会把回环监听挤到公网 ----
+FALLBACK_PORT="$(python3 - "${DATA_DIR}/panel.db" <<'PY' 2>/dev/null || true
+import sqlite3, sys
+try:
+    conn = sqlite3.connect("file:%s?mode=ro" % sys.argv[1], uri=True)
+    row = conn.execute("SELECT value FROM meta WHERE key='nginx_listen'").fetchone()
+    conn.close()
+    print((row[0] if row else "127.0.0.1:8003").rsplit(":", 1)[-1])
+except Exception:
+    print("8003")
+PY
+)"
+FALLBACK_PORT="${FALLBACK_PORT:-8003}"
+case "${PORT}" in
+  "${FALLBACK_PORT}"|8003|8443)
+    die "端口 ${PORT} 是 REALITY 回落的本地 TLS 端口，管理入口不能占用" ;;
+esac
+
 CERT="${CERT_DIR}/${DOMAIN}/fullchain.pem"
 KEY="${CERT_DIR}/${DOMAIN}/privkey.pem"
 [[ -f "${CERT}" && -f "${KEY}" ]] || \
   die "找不到证书 ${CERT}；先执行 deploy/selfsteal.sh ${DOMAIN} 或 certbot 签发"
 
 command -v nginx >/dev/null 2>&1 || die "缺少 nginx"
+
+# ---- 确保 $panel_allowed 有定义，否则 nginx -t 直接失败 ----
+if [[ ! -f "${GUARD_CONF}" ]]; then
+  warn "还没有生成 ${GUARD_CONF}，先写入「不限制」的占位，稍后由 panel-guard.sh 接管"
+  install -d -m 0755 "$(dirname "${GUARD_CONF}")"
+  cat >"${GUARD_CONF}" <<'EOF'
+# 占位：由 deploy/panel-guard.sh 覆盖
+geo $panel_allowed {
+    default 1;
+}
+EOF
+fi
 
 BACKUP=""
 if [[ -f "${CONF}" ]]; then
@@ -57,13 +96,18 @@ server {
     listen ${PORT} ssl http2;
     server_name ${DOMAIN};
 
+    # 非白名单来源直接断连（TCP 层由 nftables 先丢弃，这里是兜底）
+    if (\$panel_allowed = 0) { return 444; }
+
     ssl_certificate     ${CERT};
     ssl_certificate_key ${KEY};
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_session_cache   shared:PANEL_TLS:10m;
+    ssl_session_tickets off;
 
     server_tokens off;
     client_max_body_size 2m;
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
     location / {
         proxy_pass http://${PANEL_ADDR};
@@ -88,13 +132,20 @@ if ! nginx -t; then
   fi
   die "nginx -t 未通过"
 fi
-[[ -n "${BACKUP}" ]] && rm -f "${BACKUP}"
+if [[ -n "${BACKUP}" ]]; then
+  rm -f "${BACKUP}"
+fi
 
 systemctl reload nginx 2>/dev/null || systemctl restart nginx
 
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow "${PORT}/tcp" >/dev/null 2>&1 || true
   log "已在 ufw 放行 ${PORT}/tcp"
+fi
+
+# 立刻按当前白名单同步一次，避免入口刚开就裸奔
+if [[ -x /opt/reality-panel/deploy/panel-guard.sh ]]; then
+  /opt/reality-panel/deploy/panel-guard.sh sync || warn "panel-guard 同步失败，稍后由定时器重试"
 fi
 
 cat <<EOF
@@ -105,16 +156,22 @@ cat <<EOF
  地址    https://${DOMAIN}:${PORT}
  反代    ${PANEL_ADDR}
  配置    ${CONF}
+ 白名单  ${GUARD_CONF}（真源：面板设置 -> 访问白名单）
 
  还需要：
    1. 云厂商安全组放行 TCP ${PORT}
    2. 服务器防火墙放行（脚本已尝试 ufw）
-   3. 浏览器打开上面的地址，用面板账号登录
+   3. 面板设置里填好「访问白名单」，然后：
+        sudo bash deploy/panel-guard.sh sync
 
- 安全建议：
-   - 面板现在公网可达，务必用强密码
-   - 「设置 → 访问白名单」可以只允许你的 IP
-   - 不想暴露时执行：
-       sudo bash deploy/panel-https.sh --remove
+ 白名单生效后的效果：
+   白名单内  —— 正常打开面板
+   白名单外  —— TCP 层直接丢弃，端口扫描看不到，浏览器表现为连接超时
+
+ 被锁在门外时（换了 IP）：
+   SSH 进去执行  sudo bash deploy/panel-guard.sh add <你的新IP> --ttl 2h
+
+ 不想暴露时执行：
+   sudo bash deploy/panel-https.sh --remove
 ============================================================
 EOF

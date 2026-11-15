@@ -45,6 +45,7 @@ Xray REALITY :443
 
 - SNI 必须是 `panel.example.com`，不能填 `www.lovelive-anime.jp`；后者只是 nginx 反代的上游
 - `dest` 必须是 `127.0.0.1:8003`，`xver` 选 v1（PROXY protocol）
+- 回落站点有两种模式：`proxy` 反代外部站点，`static` 直接托管本机静态站（推荐，见第 2 步）
 - nginx 用 `proxy_protocol` 接收 Xray 转来的连接，才能拿到真实客户端 IP
 - 443 归 Xray，8003 只监听回环，公网访问不到
 - 面板的 `/sub/` 也走这条回落：普通 HTTPS 请求到 `/sub/` 会被 nginx 反代到面板 8080。
@@ -67,9 +68,10 @@ Xray REALITY :443
 
    | 端口 | 用途 |
    |---|---|
-   | 80 | 签证书 |
+   | 80 | 签证书（ACME HTTP-01，由 nginx 应答） |
    | 443 | 客户端连接 |
-   | 9443 | 面板网页 |
+   | 9443 | 面板网页（建议只对白名单 IP 开放） |
+   | 8003 | 回落站点，**只监听 127.0.0.1**，公网访问不到 |
    | 8787 | 节点 agent，只放行面板 IP |
 
 4. 域名在 Cloudflare 的话，记录先设为 **DNS only（灰云）**。
@@ -91,14 +93,22 @@ sudo bash deploy/install.sh
 
 ---
 
-## 第 2 步：给面板开 HTTPS
+## 第 2 步：签证书 + 部署回落站点
 
 先确认 `panel.example.com` 已经解析到这台服务器。
 
 ```bash
 cd ~/one-panel
-sudo bash deploy/selfsteal.sh panel.example.com
+
+# 1) 签证书 + 生成回落配置（证书走 webroot，可自动续期）
+sudo SITE_MODE=static bash deploy/selfsteal.sh panel.example.com
+
+# 2) 部署回落站点（导航站），静态文件放 /var/www/nav
+sudo bash deploy/nav-site.sh panel.example.com /opt/webstack-nav/public
+
+# 3) 开面板 HTTPS 入口，并按白名单收紧
 sudo bash deploy/panel-https.sh panel.example.com
+sudo bash deploy/panel-guard.sh sync
 ```
 
 然后浏览器打开：
@@ -110,6 +120,50 @@ https://panel.example.com:9443
 第一次会让你创建管理员账号。
 
 > 打不开就先检查：`systemctl status reality-panel` 和 `ss -ltnp | grep 9443`
+
+### 证书自动续期
+
+`selfsteal.sh` 用的是 **webroot** 模式：80 端口由 nginx 自己应答 ACME 校验文件，
+续期时不需要停 nginx、不占端口、也不重启 Xray（REALITY 不加载证书，证书由 nginx 在回落端口出示）。
+
+```bash
+certbot renew --dry-run              # 必须通过
+systemctl list-timers | grep certbot # 定时器在跑
+```
+
+以下几点会让续期失败，务必确认：
+
+- 80 端口必须长期对外开放（安全组 + 防火墙都放行）
+- 域名必须是 **灰云（DNS only）**；上了 Cloudflare 橙云的域名不仅续期失败，REALITY 本身也用不了
+- 80 被封的话改用 DNS-01：`acme.sh --issue --dns dns_cf -d <域名> --reloadcmd 'systemctl reload nginx'`
+
+### 回落站点（导航站）
+
+`deploy/nav-site.sh` 做四件事：落版本目录 → 原子切换 `/var/www/nav` 软链 →
+用 static 模式重新生成 nginx 配置 → 自检端口只绑回环、本机 SNI 访问返回 200。
+
+```bash
+sudo bash deploy/nav-site.sh panel.example.com /opt/webstack-nav/public
+sudo bash deploy/nav-site.sh --rollback   # 回滚到上一个版本
+```
+
+改完内容重新上传，再跑一次脚本即可；HTML 设了 no-cache，不用清浏览器缓存。
+
+### 9443 白名单（网络级）
+
+白名单真源是面板设置里的「访问白名单」，`panel-guard.sh` 每 30 秒单向同步到
+nftables 集合和 nginx 的 `geo` 列表：
+
+- 白名单外：nftables 在 TCP 层直接 DROP，**端口扫描看不到，浏览器表现为连接超时**
+- 兜底层：nginx 里 `if ($panel_allowed = 0) { return 444; }`，防火墙规则丢失时也不会放行
+
+```bash
+sudo deploy/panel-guard.sh status                 # 看实际生效情况
+sudo deploy/panel-guard.sh add 1.2.3.4 --ttl 2h   # 换 IP 被锁时临时放行
+```
+
+> 白名单为空 = 不限制（与面板应用层语义一致）。`install.sh` 首次安装会把当前
+> SSH 来源 IP 自动写进去，避免刚开 9443 就被自己挡在门外。
 
 ---
 
@@ -302,6 +356,27 @@ ss -ltnp | grep ':9443'
 
 面板只监听 `127.0.0.1:8080`，必须通过 9443 的 HTTPS 入口访问。
 
+### 9443 换了 IP 打不开
+
+白名单生效后，非白名单来源会在 TCP 层被丢弃（浏览器表现为连接超时，`curl` 也不会报证书错误）。
+SSH 进服务器临时放行：
+
+```bash
+sudo /opt/reality-panel/deploy/panel-guard.sh add <你的新IP> --ttl 2h
+```
+
+长期地址写进面板「设置 → 访问白名单」，30 秒内自动同步。
+
+### 回落站点 404 / 白屏
+
+```bash
+ls -l /var/www/nav            # 应该是软链，指向 /var/www/nav-releases/<时间戳>
+ss -ltnp | grep 8003          # 必须只有 127.0.0.1
+curl -k --resolve <域名>:443:127.0.0.1 https://<域名>/ -o /dev/null -w '%{http_code}\n'
+```
+
+自检 200 但浏览器打不开，通常是没走 443（比如直接访问了 IP:8003，本来就该连不上）。
+
 ---
 
 ## 安全提醒
@@ -325,6 +400,19 @@ journalctl -u xray -n 50
 
 nginx -t
 systemctl reload nginx
+
+# 回落站点
+sudo bash deploy/nav-site.sh <域名> /opt/webstack-nav/public
+sudo bash deploy/nav-site.sh --rollback
+ss -ltnp | grep 8003                       # 只应出现 127.0.0.1
+
+# 证书
+certbot certificates
+certbot renew --dry-run
+
+# 9443 白名单
+sudo deploy/panel-guard.sh status
+sudo deploy/panel-guard.sh add <IP> --ttl 2h
 
 # 查看面板实际运行版本
 curl -s http://127.0.0.1:8080/api/bootstrap

@@ -49,9 +49,13 @@ if [[ "${UNINSTALL}" -eq 1 ]]; then
   log "停止并移除 ${SERVICE_NAME}"
   systemctl disable --now "${SERVICE_NAME}" 2>/dev/null || true
   systemctl disable --now "${SERVICE_NAME}-sweep.timer" 2>/dev/null || true
+  systemctl disable --now "${SERVICE_NAME}-guard.timer" 2>/dev/null || true
   rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
   rm -f "/etc/systemd/system/${SERVICE_NAME}-sweep.service"
   rm -f "/etc/systemd/system/${SERVICE_NAME}-sweep.timer"
+  rm -f "/etc/systemd/system/${SERVICE_NAME}-guard.service"
+  rm -f "/etc/systemd/system/${SERVICE_NAME}-guard.timer"
+  nft delete table inet panel_guard 2>/dev/null || true
   rm -f "/etc/sudoers.d/${SERVICE_NAME}"
   systemctl daemon-reload || true
   log "已卸载。数据仍保留在 ${DATA_DIR}（确认无用后可手动删除）"
@@ -60,7 +64,7 @@ fi
 
 # ------------------------------------------------------------ 包管理
 missing=0
-for cmd in python3 curl nginx sudo openssl; do
+for cmd in python3 curl nginx sudo openssl nft; do
   command -v "${cmd}" >/dev/null 2>&1 || missing=1
 done
 
@@ -71,17 +75,17 @@ else
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o Acquire::ForceIPv4=true update -qq || warn "apt-get update 未完成（常见原因是 unattended-upgrades 占用锁），继续"
-    if ! timeout 240 apt-get -o Acquire::ForceIPv4=true install -y -qq python3 curl ca-certificates openssl nginx sudo >/dev/null; then
+    if ! timeout 240 apt-get -o Acquire::ForceIPv4=true install -y -qq python3 curl ca-certificates openssl nginx sudo nftables >/dev/null; then
       warn "apt 被其他进程占用或超时，10 秒后重试一次"
       sleep 10
-      timeout 240 apt-get -o Acquire::ForceIPv4=true install -y -qq python3 curl ca-certificates openssl nginx sudo >/dev/null || \
+      timeout 240 apt-get -o Acquire::ForceIPv4=true install -y -qq python3 curl ca-certificates openssl nginx sudo nftables >/dev/null || \
         warn "依赖安装未完成；如果面板能正常启动可以忽略"
     fi
   elif command -v dnf >/dev/null 2>&1; then
-    timeout 240 dnf --setopt=ip_resolve=4 install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
+    timeout 240 dnf --setopt=ip_resolve=4 install -y -q python3 curl ca-certificates openssl nginx sudo nftables >/dev/null || \
       warn "依赖安装未完成；如果面板能正常启动可以忽略"
   elif command -v yum >/dev/null 2>&1; then
-    timeout 240 yum install -y -q python3 curl ca-certificates openssl nginx sudo >/dev/null || \
+    timeout 240 yum install -y -q python3 curl ca-certificates openssl nginx sudo nftables >/dev/null || \
       warn "依赖安装未完成；如果面板能正常启动可以忽略"
   else
     warn "未识别的包管理器，请自行确保 python3 >= 3.8 与 sudo 已安装"
@@ -100,6 +104,11 @@ fi
 
 install -d -m 0755 "${APP_DIR}"
 install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0700 "${DATA_DIR}"
+
+# 回落静态站、ACME webroot、白名单手工列表
+install -d -m 0755 /var/www/nav /var/www/nav-releases
+install -d -m 0755 /var/www/acme
+install -d -m 0755 /etc/panel-guard.d
 
 # ------------------------------------------------------------ 复制程序
 if [[ "$(readlink -f "${SRC_DIR}")" != "$(readlink -f "${APP_DIR}")" ]]; then
@@ -255,7 +264,7 @@ else
   for _ in 1 2 3 4 5; do
     RUN_VERSION="$(curl -s --max-time 3 "http://127.0.0.1:${PANEL_PORT}/api/bootstrap" 2>/dev/null \
       | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
-    [[ -n "${RUN_VERSION}" ]] && break
+    if [[ -n "${RUN_VERSION}" ]]; then break; fi
     sleep 1
   done
   if [[ -n "${RUN_VERSION}" ]]; then
@@ -305,6 +314,63 @@ else
   warn "面板启动失败，请查看：journalctl -u ${SERVICE_NAME} -n 50 --no-pager"
 fi
 
+# ------------------------------------------------------------ 9443 白名单守护
+log "写入 9443 白名单守护单元"
+cat >"/etc/systemd/system/${SERVICE_NAME}-guard.service" <<EOF
+[Unit]
+Description=Reality Panel - panel entry allowlist (nftables + nginx geo)
+After=nginx.service
+Wants=nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=${APP_DIR}/deploy/panel-guard.sh sync
+EOF
+
+cat >"/etc/systemd/system/${SERVICE_NAME}-guard.timer" <<EOF
+[Unit]
+Description=Sync panel allowlist every 30s
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now "${SERVICE_NAME}-guard.timer" 2>/dev/null || \
+  warn "白名单定时同步未启用，可手动执行 ${APP_DIR}/deploy/panel-guard.sh sync"
+
+# 首次安装把当前 SSH 来源 IP 写进白名单，避免刚开 9443 就把自己挡在门外
+SEED_IP="${SSH_CLIENT%% *}"
+if [[ -n "${SEED_IP}" && -f "${DATA_DIR}/panel.db" ]]; then
+  python3 - "${DATA_DIR}/panel.db" "${SEED_IP}" <<'PY' 2>/dev/null || true
+import sqlite3
+import sys
+
+db, ip = sys.argv[1], sys.argv[2].strip()
+if not db or not ip:
+    raise SystemExit(0)
+conn = sqlite3.connect(db)
+row = conn.execute("SELECT value FROM meta WHERE key='access_allowlist'").fetchone()
+if not (row and (row[0] or "").strip()):
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('access_allowlist', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (ip,),
+    )
+    conn.commit()
+    print(f"访问白名单已初始化为当前 SSH 来源：{ip}")
+conn.close()
+PY
+fi
+
+"${APP_DIR}/deploy/panel-guard.sh" sync || \
+  warn "白名单同步失败，可手动执行 ${APP_DIR}/deploy/panel-guard.sh sync"
+
 IP="$(curl -4 -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
 cat <<EOF
 
@@ -325,15 +391,22 @@ cat <<EOF
  接下来：
    1. 打开面板，创建管理员账号
    2. 在「设置」填写域名、Xray 配置路径等
-   3. 申请证书并生成自偷自配置：
-        sudo bash ${APP_DIR}/deploy/selfsteal.sh 你的域名 www.lovelive-anime.jp
-      （若程序目录没有 deploy，可从仓库重新获取该脚本）
-   4. 在「节点」创建 Vision / XHTTP 节点，再到「订阅用户」生成订阅
+   3. 申请证书并生成自偷自配置（证书走 webroot，可自动续期）：
+        sudo bash ${APP_DIR}/deploy/selfsteal.sh 你的域名
+   4. 部署回落站点（静态站 / 导航站）：
+        sudo bash ${APP_DIR}/deploy/nav-site.sh 你的域名 /opt/webstack-nav/public
+   5. 开管理入口并收紧白名单：
+        sudo bash ${APP_DIR}/deploy/panel-https.sh 你的域名 9443
+        sudo bash ${APP_DIR}/deploy/panel-guard.sh sync
+   6. 在「节点」创建 Vision / XHTTP 节点，再到「订阅用户」生成订阅
 
  常用命令：
    systemctl status ${SERVICE_NAME}
    journalctl -u ${SERVICE_NAME} -f
-   systemctl list-timers | grep ${SERVICE_NAME}   # 过期订阅自动清理
+   systemctl list-timers | grep ${SERVICE_NAME}   # 过期订阅清理 / 白名单同步
    python3 ${APP_DIR}/app.py sweep                # 手动清理一次
+   ${APP_DIR}/deploy/panel-guard.sh status        # 看 9443 白名单实际生效情况
+   ${APP_DIR}/deploy/panel-guard.sh add <IP> --ttl 2h   # 临时放行
+   certbot renew --dry-run                        # 验证证书自动续期
 ============================================================
 EOF

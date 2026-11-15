@@ -198,7 +198,12 @@ class Agent:
         return proc.returncode == 0 and "active" in (proc.stdout or "").strip()
 
     def issue_cert(self, domain: str, cert_dir: str, email: str = "") -> dict:
-        """用 certbot standalone 签 HTTP-01 证书；已有则跳过。"""
+        """用 certbot standalone 签 HTTP-01 证书；已有则跳过。
+
+        standalone 会占用 80 端口，所以用 pre/post hook 让 certbot 自己停/起 nginx。
+        hook 会被写进 /etc/letsencrypt/renewal/<域名>.conf，90 天后的自动续期
+        同样会执行，不会再出现「续期时 80 被 nginx 占用」的静默失败。
+        """
         cert = os.path.join(cert_dir, domain, "fullchain.pem")
         key = os.path.join(cert_dir, domain, "privkey.pem")
         result: dict[str, Any] = {"ok": False, "issued": False, "output": ""}
@@ -211,14 +216,12 @@ class Agent:
             result["output"] = "节点未安装 certbot；请重跑 agent 安装命令，或手动 apt install certbot"
             return result
 
-        nginx_was_active = self._service_active("nginx")
-        if nginx_was_active:
-            run(["systemctl", "stop", "nginx"], timeout=30)
-
         args = [
             "certbot", "certonly", "--standalone",
             "-d", domain,
             "--non-interactive", "--agree-tos", "--keep-until-expiring",
+            "--pre-hook", "systemctl stop nginx || true",
+            "--post-hook", "systemctl start nginx || true",
             "--deploy-hook", "systemctl reload nginx || true",
         ]
         if email:
@@ -233,9 +236,6 @@ class Agent:
         except (OSError, subprocess.SubprocessError) as exc:
             output = f"执行 certbot 失败：{exc}"
             code = 1
-
-        if nginx_was_active:
-            run(["systemctl", "start", "nginx"], timeout=30)
 
         result["output"] = output[-4000:]
         if code != 0:

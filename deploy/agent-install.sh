@@ -48,7 +48,7 @@ while [[ $# -gt 0 ]]; do
     --token) TOKEN="${2:?}"; shift 2 ;;
     --port) PORT="${2:?}"; shift 2 ;;
     --bind) BIND="${2:?}"; shift 2 ;;
-    --allow) ALLOW="${2:?}"; shift 2 ;;
+    --allow) ALLOW="${ALLOW:+${ALLOW},}${2:?}"; shift 2 ;;
     --tls) TLS=1; shift ;;
     --no-tls) TLS=0; shift ;;
     --xray-config) XRAY_CONFIG="${2:?}"; shift 2 ;;

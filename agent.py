@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -23,6 +24,7 @@ import re
 import shlex
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -33,8 +35,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "0.5.0"
+AGENT_VERSION = "0.6.0"
 MAX_BODY = 2 * 1024 * 1024
+
+
+def cert_fingerprint(path: str) -> str:
+    """证书文件的 SHA256 指纹，格式与 `openssl x509 -fingerprint -sha256` 一致。"""
+    try:
+        with open(path, "rb") as fh:
+            pem = fh.read()
+        der = ssl.PEM_cert_to_DER_cert(pem.decode("ascii", "ignore"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return "unknown"
+    return hashlib.sha256(der).hexdigest()
 
 
 def _parse_allow(values: list[str]) -> tuple:
@@ -511,6 +524,8 @@ def main(argv: list[str] | None = None) -> int:
         metavar="CIDR",
         help="只接受这些来源 IP（可重复）；不填则只靠令牌鉴权",
     )
+    parser.add_argument("--tls-cert", default=os.environ.get("AGENT_TLS_CERT", ""))
+    parser.add_argument("--tls-key", default=os.environ.get("AGENT_TLS_KEY", ""))
     parser.add_argument("--version", action="version", version=f"one-panel-agent {AGENT_VERSION}")
     args = parser.parse_args(argv)
 
@@ -525,7 +540,23 @@ def main(argv: list[str] | None = None) -> int:
 
     agent = Agent(args)
     server = AgentServer((args.bind, args.port), agent)
-    print(f"[agent] {AGENT_VERSION} listening on {args.bind}:{args.port}", flush=True)
+
+    scheme = "http"
+    if args.tls_cert and args.tls_key:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            context.load_cert_chain(args.tls_cert, args.tls_key)
+        except (OSError, ssl.SSLError) as exc:
+            print(f"[agent] 加载证书失败：{exc}", file=sys.stderr)
+            return 2
+        # 直接在监听套接字上包 TLS：每个 accept 出来的连接都是加密的
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+
+    print(f"[agent] {AGENT_VERSION} listening on {scheme}://{args.bind}:{args.port}", flush=True)
+    if scheme == "https":
+        print(f"[agent] 面板里的 Agent 地址请填 {scheme}://<本机IP>:{args.port}", flush=True)
+        print(f"[agent] 证书指纹(SHA256): {cert_fingerprint(args.tls_cert)}", flush=True)
     if agent.allow:
         print(f"[agent] 来源白名单: {', '.join(str(n) for n in agent.allow)}", flush=True)
     else:

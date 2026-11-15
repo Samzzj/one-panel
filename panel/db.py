@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS servers (
     domain       TEXT NOT NULL DEFAULT '',
     agent_url    TEXT NOT NULL DEFAULT '',
     token        TEXT NOT NULL DEFAULT '',
+    agent_cert   TEXT NOT NULL DEFAULT '',
     enabled      INTEGER NOT NULL DEFAULT 1,
     remark       TEXT NOT NULL DEFAULT '',
     last_seen_at INTEGER NOT NULL DEFAULT 0,
@@ -221,6 +222,9 @@ class Database:
             server_columns = {row["name"] for row in conn.execute("PRAGMA table_info(servers)")}
             if "domain" not in server_columns:
                 conn.execute("ALTER TABLE servers ADD COLUMN domain TEXT NOT NULL DEFAULT ''")
+            # v4：agent 启用 HTTPS 后固定它的证书指纹
+            if "agent_cert" not in server_columns:
+                conn.execute("ALTER TABLE servers ADD COLUMN agent_cert TEXT NOT NULL DEFAULT ''")
 
             if conn.execute("SELECT COUNT(*) FROM servers").fetchone()[0] == 0:
                 row = conn.execute("SELECT value FROM meta WHERE key='public_host'").fetchone()
@@ -230,7 +234,7 @@ class Database:
                     " VALUES(1, '本机', 'local', ?, '', '', 1, ?)",
                     (address, now()),
                 )
-            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '3')")
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '4')")
 
 
 class Store:
@@ -336,7 +340,7 @@ class Store:
 
     def update_server(self, server_id: int, data: dict) -> dict | None:
         fields, values = [], []
-        allowed = {"name", "address", "domain", "agent_url", "token", "enabled", "remark"}
+        allowed = {"name", "address", "domain", "agent_url", "token", "enabled", "remark", "agent_cert"}
         for key, value in data.items():
             if key in allowed:
                 fields.append(f"{key}=?")

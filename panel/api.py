@@ -603,10 +603,28 @@ def test_server(app, req: Request, server_id: str) -> dict:
         raise ApiError(404, "服务器不存在")
     if server["kind"] == "local":
         return {"ok": True, "health": app.xray.status(), "local": True}
-    result = AgentClient(server).health()
+
+    client = AgentClient(server)
+    pinned = ""
+    if client.tls and not client.pin:
+        # 首次信任（TOFU）：把节点证书指纹记下来，之后每次连接都要求一致。
+        try:
+            pinned = client.probe_fingerprint()
+        except (OSError, ValueError) as exc:
+            app.store.touch_server(sid, "error", f"读取 agent 证书失败：{exc}")
+            return {"ok": False, "health": {"ok": False, "error": f"读取 agent 证书失败：{exc}"}}
+        if pinned:
+            app.store.update_server(sid, {"agent_cert": pinned})
+            server = app.store.server(sid) or server
+            client = AgentClient(server)
+
+    result = client.health()
     ok = bool(result.get("ok"))
     app.store.touch_server(sid, "ok" if ok else "error", "" if ok else (result.get("error") or ""))
-    return {"ok": ok, "health": result, "server": _public_server(app.store.server(sid))}
+    payload = {"ok": ok, "health": result, "server": _public_server(app.store.server(sid))}
+    if pinned:
+        payload["fingerprint"] = pinned
+    return payload
 
 
 def rotate_server_token(app, req: Request, server_id: str) -> dict:

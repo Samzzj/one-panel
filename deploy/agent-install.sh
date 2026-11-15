@@ -26,6 +26,7 @@ TOKEN="${AGENT_TOKEN:-}"
 PORT="${AGENT_PORT:-8787}"
 BIND="${AGENT_BIND:-0.0.0.0}"
 ALLOW="${AGENT_ALLOW:-}"
+TLS="${AGENT_TLS:-1}"
 XRAY_CONFIG="${AGENT_XRAY_CONFIG:-/usr/local/etc/xray/config.json}"
 NGINX_DIR="${AGENT_NGINX_DIR:-/etc/nginx/conf.d}"
 INSTALL_XRAY=1
@@ -48,6 +49,8 @@ while [[ $# -gt 0 ]]; do
     --port) PORT="${2:?}"; shift 2 ;;
     --bind) BIND="${2:?}"; shift 2 ;;
     --allow) ALLOW="${2:?}"; shift 2 ;;
+    --tls) TLS=1; shift ;;
+    --no-tls) TLS=0; shift ;;
     --xray-config) XRAY_CONFIG="${2:?}"; shift 2 ;;
     --nginx-dir) NGINX_DIR="${2:?}"; shift 2 ;;
     --repo) RAW_BASE="${2%/}"; shift 2 ;;
@@ -235,11 +238,45 @@ fi
 
 # ------------------------------------------------------------ 配置
 umask 077
+
+# ------------------------------------------------------------ TLS
+TLS_CERT=""
+TLS_KEY=""
+SCHEME="http"
+if [[ "${TLS}" -eq 1 ]]; then
+  if ! command -v openssl >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssl >/dev/null 2>&1 || true
+    fi
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    install -d -m 0700 /etc/one-panel-agent
+    TLS_CERT="/etc/one-panel-agent/tls.crt"
+    TLS_KEY="/etc/one-panel-agent/tls.key"
+    if [[ ! -f "${TLS_CERT}" || ! -f "${TLS_KEY}" ]]; then
+      log "生成 agent 自签证书"
+      openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+        -keyout "${TLS_KEY}" -out "${TLS_CERT}" \
+        -subj "/CN=one-panel-agent" \
+        -addext "subjectAltName=IP:${BIND},DNS:$(hostname)" >/dev/null 2>&1 \
+        || { warn "证书生成失败，退回明文 HTTP"; TLS_CERT=""; TLS_KEY=""; }
+    fi
+    if [[ -n "${TLS_CERT}" ]]; then
+      chmod 600 "${TLS_KEY}" "${TLS_CERT}"
+      SCHEME="https"
+    fi
+  else
+    warn "缺少 openssl，agent 退回明文 HTTP"
+  fi
+fi
+
 cat >"${ENV_FILE}" <<EOF
 AGENT_TOKEN=${TOKEN}
 AGENT_BIND=${BIND}
 AGENT_PORT=${PORT}
 AGENT_ALLOW=${ALLOW}
+AGENT_TLS_CERT=${TLS_CERT}
+AGENT_TLS_KEY=${TLS_KEY}
 AGENT_XRAY_CONFIG=${XRAY_CONFIG}
 AGENT_NGINX_DIR=${NGINX_DIR}
 EOF
@@ -275,7 +312,7 @@ sleep 1
 systemctl is-active --quiet one-panel-agent || warn "agent 没有启动成功，请执行：systemctl status one-panel-agent --no-pager"
 
 if systemctl is-active --quiet one-panel-agent; then
-  log "Agent 已启动，监听 ${BIND}:${PORT}"
+  log "Agent 已启动，监听 ${SCHEME}://${BIND}:${PORT}"
 else
   warn "Agent 启动失败，请查看：journalctl -u one-panel-agent -n 50 --no-pager"
 fi
@@ -286,11 +323,17 @@ cat <<EOF
  节点 Agent 安装完成
 ============================================================
  端口        ${PORT}
+ 协议        ${SCHEME}
  Xray 配置   ${XRAY_CONFIG}
  Nginx 目录  ${NGINX_DIR}
 
- 回到面板「服务器」页面，点「测试连接」。
- 建议用防火墙把 ${PORT} 只放行面板所在服务器的 IP，例如：
+ 回到面板「服务器」页面：
+   Agent 地址填 ${SCHEME}://<本机公网IP>:${PORT}
+   然后点「测试连接」——第一次会记录证书指纹（TOFU），之后每次连接都校验它。
+
+ 如果这次重装换了证书，面板会提示指纹不匹配：重新点一次「测试」即可重新信任。
+
+ 建议再用防火墙把 ${PORT} 只放行面板所在服务器的 IP，例如：
    ufw allow from <面板IP> to any port ${PORT} proto tcp
 
  常用命令：

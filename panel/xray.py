@@ -43,7 +43,13 @@ def _api_address(settings: dict[str, str]) -> tuple[str, int]:
     host, _, port = raw.rpartition(":")
     if not host:
         return "127.0.0.1", 10085
-    return host, int(port)
+    # 设置页允许手填，[::1]:10085 这种带方括号的写法要剥掉，
+    # 否则 listen 会变成 "[::1]"、statquery 也会拼错，统计静默归零。
+    host = host.strip("[]")
+    try:
+        return host, int(port)
+    except ValueError:
+        return "127.0.0.1", 10085
 
 
 def _snapshot(path: str) -> str | None:
@@ -144,7 +150,13 @@ def build_config(nodes: list[dict], clients: list[dict], settings: dict[str, str
         inbounds.append(build_inbound(node, by_node.get(int(node["id"]), [])))
 
     config: dict[str, Any] = {
-        "log": {"loglevel": "warning", "access": "none", "error": ""},
+        # error 留空会把日志丢到 stderr（journald），面板的「日志」页读的却是
+        # settings.xray_log 指向的文件，结果永远空白。这里显式写路径。
+        "log": {
+            "loglevel": "warning",
+            "access": "none",
+            "error": (settings.get("xray_log") or "/var/log/xray/error.log"),
+        },
         "api": {
             "tag": "api",
             "services": ["HandlerService", "LoggerService", "StatsService"],

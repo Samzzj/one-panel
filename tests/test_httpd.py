@@ -31,6 +31,9 @@ class FakeStore:
     def settings(self) -> dict:
         return dict(self._settings)
 
+    def setting(self, key: str, default: str = "") -> str:
+        return self._settings.get(key, default)
+
     def server(self, _sid: int) -> dict | None:
         return self._server
 

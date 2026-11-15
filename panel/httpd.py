@@ -141,6 +141,9 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "RealityPanel"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    # 没有超时的话，一个只发 Content-Length 不发 body 的连接就能永久占住线程，
+    # 几十条请求足以把 1G 内存的机器拖死。
+    timeout = 30
 
     # --------------------------------------------------------- 入口
 

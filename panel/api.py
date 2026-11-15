@@ -179,7 +179,9 @@ def _sub_payload(data: dict, *, partial: bool = False) -> dict:
         payload["enabled"] = bool(data.get("enabled"))
     elif not partial:
         payload["enabled"] = True
-    if "expires_days" in data:
+    if data.get("permanent"):
+        payload["expires_at"] = 0
+    elif "expires_days" in data:
         days = _number(data, "expires_days", "有效期天数", default=0, minimum=0, maximum=36500)
         payload["expires_at"] = 0 if days == 0 else now() + days * 86400
     elif "expires_at" in data:
@@ -674,6 +676,29 @@ def selfsteal_server(app, req: Request, server_id: str) -> dict:
 # ---------------------------------------------------------------- 订阅用户
 
 
+def _drop_unchanged_expiry(sub: dict | None, data: dict) -> dict:
+    """去掉「前端原样回填、用户其实没改」的有效期字段。
+
+    编辑弹窗把剩余天数回填进表单，保存时又原样送回。如果直接按 now + days
+    重算，改个备注就等于白续期（最多 +24 小时）；已过期的订阅回填 0，点保存
+    还会直接变成永久。这里只在值确实变了的时候才生效，改成永久要用 explicit
+    的 permanent 标志。
+    """
+    if not isinstance(data, dict) or "expires_days" not in data or data.get("permanent"):
+        return data
+    current = int((sub or {}).get("expires_at") or 0)
+    if not current:
+        return data
+    try:
+        days = int(float(data.get("expires_days") or 0))
+    except (TypeError, ValueError):
+        return data
+    remaining = round((current - now()) / 86400)
+    if days == remaining or days == 0:
+        return {key: value for key, value in data.items() if key != "expires_days"}
+    return data
+
+
 def create_sub(app, req: Request) -> dict:
     data = req.json()
     payload = _sub_payload(data)
@@ -690,9 +715,10 @@ def create_sub(app, req: Request) -> dict:
 
 def update_sub(app, req: Request, sub_id: str) -> dict:
     sid = int(sub_id)
-    if not app.store.sub(sid):
+    sub = app.store.sub(sid)
+    if not sub:
         raise ApiError(404, "订阅不存在")
-    payload = _sub_payload(req.json(), partial=True)
+    payload = _sub_payload(_drop_unchanged_expiry(sub, req.json()), partial=True)
     sub = app.store.update_sub(sid, payload)
     app.mark_dirty()
     _audit(app, req, "修改订阅", sub["name"] if sub else str(sid), ", ".join(payload))
@@ -716,7 +742,12 @@ def set_sub_nodes(app, req: Request, sub_id: str) -> dict:
         raise ApiError(404, "订阅不存在")
     node_ids = _ids(req.json().get("node_ids"), "节点列表")
     known = {n["id"] for n in app.store.nodes()}
-    sub = app.store.set_sub_nodes(sid, [n for n in node_ids if n in known])
+    node_ids = [n for n in node_ids if n in known]
+    # 空列表会把该订阅下的凭据全部删掉，连带流量记录一起 cascade 掉；
+    # 要停用请用「禁用」或让它过期，而不是清空节点。
+    if not node_ids:
+        raise ApiError(400, "至少保留一个节点；要停用请用「禁用」或改有效期")
+    sub = app.store.set_sub_nodes(sid, node_ids)
     app.mark_dirty()
     _audit(app, req, "调整订阅节点", sub["name"] if sub else str(sid), f"{len(node_ids)} 个节点")
     return {"ok": True, "sub": sub}
@@ -906,13 +937,12 @@ def selfsteal_apply(app, req: Request) -> dict:
     return {"ok": bool(result.get("ok")), "result": result, "server": _public_server(server)}
 
 
-def update_settings(app, req: Request) -> dict:
-    data = req.json()
-    payload: dict[str, str] = {}
-    for key, value in data.items():
-        if key in DEFAULT_SETTINGS and value is not None:
-            payload[key] = str(value).strip()
+def _validate_settings(app, req: Request, payload: dict[str, str]) -> None:
+    """设置项的公共校验。
 
+    `update_settings` 和「恢复备份」都必须走这里 —— 备份里同样能带 settings，
+    绕过校验就等于把白名单自锁、非法 CIDR 这些问题从后门放进来。
+    """
     if "default_sni" in payload and payload["default_sni"] and not valid_domain(payload["default_sni"]):
         raise ApiError(400, "默认 SNI 必须是合法域名")
     if "nginx_listen" in payload and not valid_hostport(payload["nginx_listen"]):
@@ -961,6 +991,16 @@ def update_settings(app, req: Request) -> dict:
                     400,
                     "当前 IP 不在白名单里，保存后会把你自己锁在外面；请先把当前 IP 加进去",
                 )
+
+
+def update_settings(app, req: Request) -> dict:
+    data = req.json()
+    payload: dict[str, str] = {}
+    for key, value in data.items():
+        if key in DEFAULT_SETTINGS and value is not None:
+            payload[key] = str(value).strip()
+
+    _validate_settings(app, req, payload)
 
     settings = app.store.save_settings(payload)
     if payload.get("auto_apply") == "1" and app.store.meta("dirty", "0") == "1":
@@ -1091,6 +1131,9 @@ def import_data(app, req: Request) -> dict:
             if key in DEFAULT_SETTINGS and isinstance(value, (str, int, float, bool))
         }
         if clean:
+            # 备份里的设置同样要过校验：否则恢复一份不含当前 IP 的白名单，
+            # 30 秒后 nft 规则落地，9443 立刻把操作者关在门外。
+            _validate_settings(app, req, clean)
             app.store.save_settings(clean)
 
     app.mark_dirty()

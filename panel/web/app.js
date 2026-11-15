@@ -1342,6 +1342,7 @@ function subForm(sub) {
   const remainingDays = sub && sub.expires_at
     ? Math.max(0, Math.round((sub.expires_at - Date.now() / 1000) / 86400))
     : 0;
+  const permanent = !sub || !sub.expires_at;
   const quotaGb = sub && sub.quota_bytes ? Math.round((sub.quota_bytes / 1024 ** 3) * 100) / 100 : 0;
 
   const nodeList = STATE.nodes.map((n) => `
@@ -1361,8 +1362,12 @@ function subForm(sub) {
 
     <div class="form-row">
       <div class="field"><label>有效期（天）</label>
-        <input class="input" type="number" name="expires_days" min="0" max="36500" value="${remainingDays}">
-        <div class="hint">0 表示永久</div></div>
+        <input class="input" type="number" name="expires_days" min="1" max="36500" value="${remainingDays}" ${permanent ? 'disabled' : ''}>
+        <label class="check-item" style="margin-top:8px">
+          <input type="checkbox" name="permanent" ${permanent ? 'checked' : ''}>
+          <span>永久有效</span>
+        </label>
+        <div class="hint">填天数会从今天重新起算；勾「永久有效」则取消到期时间</div></div>
       <div class="field"><label>流量额度（GB）</label>
         <input class="input" type="number" name="quota_gb" min="0" step="0.5" value="${quotaGb}">
         <div class="hint">0 表示不限</div></div>
@@ -1384,6 +1389,15 @@ function openSubModal(sub) {
   const form = $('#sub-form', m.modal);
   $('[data-cancel]', m.modal).onclick = () => m.close();
 
+  const permBox = form.querySelector('input[name=permanent]');
+  const daysBox = form.querySelector('input[name=expires_days]');
+  if (permBox && daysBox) {
+    permBox.onchange = () => {
+      daysBox.disabled = permBox.checked;
+      if (permBox.checked) daysBox.value = '0';
+    };
+  }
+
   $('#sub-save', m.modal).onclick = async () => {
     if (!form.reportValidity()) return;
     const fd = new FormData(form);
@@ -1391,6 +1405,7 @@ function openSubModal(sub) {
     const body = {
       name: String(fd.get('name') || '').trim(),
       expires_days: Number(fd.get('expires_days') || 0),
+      permanent: !!(permBox && permBox.checked),
       quota_gb: Number(fd.get('quota_gb') || 0),
       note: String(fd.get('note') || '').trim(),
     };

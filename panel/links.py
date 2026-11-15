@@ -116,6 +116,11 @@ def clash_proxy(node: dict, uuid: str, remark: str, host: str) -> dict[str, Any]
 
 _PLAIN_KEY = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PLAIN_VALUE = re.compile(r"^[A-Za-z0-9_./:@+-]+$")
+# YAML 1.1 里这些写法会被解析成 bool / null / 数字，不能裸着输出
+_YAML_RESERVED = {
+    "true", "false", "yes", "no", "on", "off", "null", "~",
+    "y", "n", "nan", "inf", "-inf", ".nan", ".inf",
+}
 
 
 def _yaml_key(key: str) -> str:
@@ -131,7 +136,15 @@ def _yaml_scalar(value: Any) -> str:
     if value is None:
         return "null"
     text = str(value)
-    if text and _PLAIN_VALUE.match(text) and not text.startswith(("-", ":")):
+    # 节点名/备注叫 "true"、"123" 这类时，裸输出会让 mihomo 把字符串读成
+    # 布尔或数字，整份订阅直接加载失败，所以强制加引号。
+    if (
+        text
+        and _PLAIN_VALUE.match(text)
+        and not text.startswith(("-", ":"))
+        and text.lower() not in _YAML_RESERVED
+        and not re.fullmatch(r"[-+]?\d+(\.\d+)?([eE][-+]?\d+)?", text)
+    ):
         return text
     return json.dumps(text, ensure_ascii=False)
 

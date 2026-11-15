@@ -374,11 +374,16 @@ def preflight(
 def plan(settings: dict[str, str], node: dict | None = None, local: bool = True) -> dict:
     """返回自偷自部署方案（配置文本 + 步骤 + 校验结论）。"""
     sni = (node or {}).get("sni") or settings.get("default_sni") or ""
-    upstream = settings.get("nginx_upstream") or "https://www.lovelive-anime.jp"
+    mode = (settings.get("site_mode") or "proxy").strip().lower()
+    # 静态模式下上游站点根本不参与渲染，不要把它带进返回值和界面上，
+    # 否则面板里会一直显示一个跟实际行为无关的域名。
+    if mode == "static":
+        upstream = ""
+    else:
+        upstream = settings.get("nginx_upstream") or "https://www.lovelive-anime.jp"
     listen_addr = settings.get("nginx_listen") or "127.0.0.1:8003"
     cert_dir = settings.get("cert_dir") or "/etc/letsencrypt/live"
     panel_addr = settings.get("panel_addr") or "127.0.0.1:8080"
-    mode = (settings.get("site_mode") or "proxy").strip().lower()
     site_root = (settings.get("site_root") or "/var/www/nav").strip() if mode == "static" else ""
     xver = int((node or {}).get("xver") if (node or {}).get("xver") is not None else (settings.get("xver") or 1))
 

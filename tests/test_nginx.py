@@ -106,6 +106,10 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(result["site_root"], "/var/www/nav")
         self.assertIn("root  /var/www/nav;", result["conf"])
         self.assertNotIn("sub_filter", result["conf"])
+        # 静态模式下不能把上游域名带出来，否则界面会显示一个跟行为无关的站点
+        self.assertEqual(result["upstream"], "")
+        self.assertEqual(result["upstream_host"], "")
+        self.assertEqual(result["target"], "/var/www/nav")
 
     def test_plan_remote_skips_host_checks(self) -> None:
         node = {"sni": "node.example.com", "dest": "127.0.0.1:8003", "xver": 1}

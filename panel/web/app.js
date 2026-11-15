@@ -588,7 +588,13 @@ function viewDashboard() {
   const port = first ? first.port : 443;
   const sni = first ? first.sni : (STATE.settings.default_sni || 'node.example.com');
   const dest = first ? first.dest : (STATE.settings.dest || '127.0.0.1:8003');
+  const isStatic = STATE.settings.site_mode === 'static';
+  const siteRoot = STATE.settings.site_root || '/var/www/nav';
   const upstream = (STATE.settings.nginx_upstream || 'https://www.lovelive-anime.jp').replace(/^https?:\/\//, '');
+  const fallbackTitle = isStatic ? '本机静态站点' : '反向代理';
+  const fallbackDesc = isStatic
+    ? `直接返回 <code>${esc(siteRoot)}</code> 下的页面，内容完全是你自己的`
+    : `拉取 <code>${esc(upstream)}</code> 的真实页面返回`;
   const vision = STATE.nodes.filter((n) => n.transport === 'vision').length;
   const xhttp = STATE.nodes.length - vision;
 
@@ -633,7 +639,7 @@ function viewDashboard() {
           ${chainItem(2, 'REALITY 校验', '校验握手、SNI、公钥与 shortId')}
           ${chainItem(3, 'PROXY protocol', `未通过校验的流量转到 <code>${esc(dest)}</code>，并携带真实源 IP`)}
           ${chainItem(4, '本机 Nginx · 本地 TLS', '用自有域名证书完成握手，探针看到的是合法站点')}
-          ${chainItem(5, '反向代理', `拉取 <code>${esc(upstream)}</code> 的真实页面返回`)}
+          ${chainItem(5, fallbackTitle, fallbackDesc)}
         </div>
         <div style="margin-top:14px"><a href="#/selfsteal">查看部署步骤与 Nginx 配置 →</a></div>
       </div>
@@ -1567,7 +1573,11 @@ async function viewSelfsteal() {
         ${chainItem(2, '验证握手', 'REALITY 校验 TLS 指纹、SNI、公钥、shortId，通过后进入 VLESS')}
         ${chainItem(3, `PROXY protocol → ${esc(plan.listen)}`, `未通过校验的连接原样转发，v${plan.xver} 头携带真实源 IP`)}
         ${chainItem(4, 'Nginx 本地 TLS', `加载 <code>${esc(plan.cert_path || '证书')}</code>，证书必须与 SNI 完全一致`)}
-        ${chainItem(5, `反向代理 ${esc(plan.upstream_host)}`, '返回真实站点内容，探针与浏览器看到的是一个正常网站')}
+        ${chainItem(5,
+          plan.mode === 'static' ? '本机静态站点' : `反向代理 ${esc(plan.upstream_host)}`,
+          plan.mode === 'static'
+            ? `直接返回 <code>${esc(plan.site_root || '/var/www/nav')}</code> 下的页面`
+            : '返回真实站点内容，探针与浏览器看到的是一个正常网站')}
       </div>
       <div class="notice info" style="margin-top:14px">
         为什么用自有域名：REALITY 不自己出示证书，未认证连接会原样交给 dest 完成握手。
@@ -1789,8 +1799,20 @@ function viewSettings() {
       <div class="card-head"><h3>自偷自 · Nginx</h3></div>
       <div class="grid grid-2">
         <div>
+          <div class="field"><label>回落模式</label>
+            <select class="select" name="site_mode" data-setting>
+              <option value="static" ${STATE.settings.site_mode === 'static' ? 'selected' : ''}>静态站点（推荐）</option>
+              <option value="proxy" ${STATE.settings.site_mode !== 'static' ? 'selected' : ''}>反代外部站点</option>
+            </select>
+            <div class="hint">静态站点：探针看到的是你自己的页面；反代：探针看到的是别人的网站</div>
+          </div>
           ${settingsField('nginx_listen', 'Nginx 监听', '必须是 127.0.0.1 上的端口，与节点 dest 一致', 'text', '127.0.0.1:8003')}
-          ${settingsField('nginx_upstream', '伪装上游站点', '返回给探针的真实网站', 'text', 'https://www.lovelive-anime.jp')}
+          <div id="field-site-root" style="${STATE.settings.site_mode === 'static' ? '' : 'display:none'}">
+            ${settingsField('site_root', '站点目录', '静态站根目录，由 nav-site.sh 部署', 'text', '/var/www/nav')}
+          </div>
+          <div id="field-upstream" style="${STATE.settings.site_mode === 'static' ? 'display:none' : ''}">
+            ${settingsField('nginx_upstream', '伪装上游站点', '仅反代模式生效；静态模式下这个值会被忽略', 'text', 'https://www.lovelive-anime.jp')}
+          </div>
         </div>
         <div>
           ${settingsField('nginx_conf', '配置文件路径', '', 'text', '/etc/nginx/conf.d/reality-selfsteal.conf')}
@@ -1867,6 +1889,17 @@ function viewSettings() {
 }
 
 function bindSettings() {
+  const modeSelect = $('select[name=site_mode]');
+  if (modeSelect) {
+    modeSelect.addEventListener('change', () => {
+      const isStatic = modeSelect.value === 'static';
+      const root = $('#field-site-root');
+      const upstream = $('#field-upstream');
+      if (root) root.style.display = isStatic ? '' : 'none';
+      if (upstream) upstream.style.display = isStatic ? 'none' : '';
+    });
+  }
+
   $('#save-settings').addEventListener('click', async () => {
     const body = {};
     $$('[data-setting]').forEach((el) => {

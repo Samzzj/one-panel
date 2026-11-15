@@ -105,6 +105,10 @@ fi
 install -d -m 0755 "${APP_DIR}"
 install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0700 "${DATA_DIR}"
 
+# 记录是不是首次安装（数据库还不存在）：后面决定要不要把当前 IP 种进白名单
+FIRST_INSTALL=0
+if [[ ! -f "${DATA_DIR}/panel.db" ]]; then FIRST_INSTALL=1; fi
+
 # 回落静态站的版本目录、ACME webroot、白名单手工列表。
 # 注意：不要预建 /var/www/nav —— 它是 nav-site.sh 管理的软链，
 # 预建目录会让 `ln -sfn` 把链接建到目录里面，首页直接 403。
@@ -348,9 +352,11 @@ systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}-guard.timer" 2>/dev/null || \
   warn "白名单定时同步未启用，可手动执行 ${APP_DIR}/deploy/panel-guard.sh sync"
 
-# 首次安装把当前 SSH 来源 IP 写进白名单，避免刚开 9443 就把自己挡在门外
+# 首次安装把当前 SSH 来源 IP 写进白名单，避免刚开 9443 就把自己挡在门外。
+# 只在"数据库还不存在"时做：升级时如果用户主动清空了白名单（= 不限制），
+# 不能再偷偷给他塞回去。
 SEED_IP="${SSH_CLIENT%% *}"
-if [[ -n "${SEED_IP}" && -f "${DATA_DIR}/panel.db" ]]; then
+if [[ "${FIRST_INSTALL}" -eq 1 && -n "${SEED_IP}" && -f "${DATA_DIR}/panel.db" ]]; then
   python3 - "${DATA_DIR}/panel.db" "${SEED_IP}" <<'PY' 2>/dev/null || true
 import sqlite3
 import sys

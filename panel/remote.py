@@ -29,6 +29,16 @@ def _split_url(base: str) -> tuple[str, str, int, bool]:
     return scheme, host, port, scheme == "https"
 
 
+def _ssl_message(exc: BaseException) -> str:
+    """把 SSL 异常整理成一句人话（CPython 有时会把消息包成 1 元组）。"""
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], tuple) and args[0]:
+        return str(args[0][0])
+    if len(args) == 1:
+        return str(args[0])
+    return str(exc)
+
+
 class _PinnedConnection(http.client.HTTPSConnection):
     """握手后校验证书指纹，不一致直接断开。"""
 
@@ -57,7 +67,14 @@ class _PinnedHandler(urllib.request.HTTPSHandler):
         self._pin = pin
 
     def https_open(self, req):  # noqa: N802
-        return self.do_open(lambda *a, **kw: _PinnedConnection(*a, pin=self._pin, **kw), req)
+        # 必须把 context 一起传给 do_open，否则它会用默认的 CA 校验上下文，
+        # 自签证书直接在握手阶段就被拒（真机上踩过）。check_hostname 已经在
+        # 这个 context 上关掉了，不要再传给 HTTPSConnection（它不认这个参数）。
+        return self.do_open(
+            lambda *a, **kw: _PinnedConnection(*a, pin=self._pin, **kw),
+            req,
+            context=self._context,
+        )
 
 
 def _unverified_context() -> ssl.SSLContext:
@@ -127,11 +144,11 @@ class AgentClient:
                 "status": exc.code,
             }
         except ssl.SSLError as exc:
-            return {"ok": False, "error": f"TLS 校验失败：{exc}"}
+            return {"ok": False, "error": f"TLS 校验失败：{_ssl_message(exc)}"}
         except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
             reason = getattr(exc, "reason", exc)
             if isinstance(reason, ssl.SSLError):
-                return {"ok": False, "error": f"TLS 校验失败：{reason}"}
+                return {"ok": False, "error": f"TLS 校验失败：{_ssl_message(reason)}"}
             return {"ok": False, "error": f"连接节点失败：{exc}"}
 
     def health(self) -> dict:

@@ -16,6 +16,9 @@ SETTINGS = {
     "panel_addr": "127.0.0.1:8080",
     "default_sni": "node.example.com",
     "xver": "1",
+    # 指到一个不存在的路径：preflight 读不到配置只会警告，
+    # 否则在真的装了面板的机器上，测试会读到线上 config.json 而误报
+    "xray_config": "/nonexistent/xray-config.json",
 }
 
 

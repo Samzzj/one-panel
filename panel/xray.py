@@ -38,6 +38,22 @@ PRIVATE_CIDRS = [
 CLIENT_LEVEL = 0
 
 
+def _log_target(settings: dict[str, str]) -> str:
+    """决定 Xray 的 error 日志写到哪。
+
+    `xray run -test` 会真的去初始化 logger：目录不存在或当前用户写不了，
+    测试直接失败、配置永远下发不了（真机上踩过）。所以只有确认目录存在且
+    可写时才用文件，否则退回 stderr（journald），由日志页回退读 journal。
+    """
+    path = (settings.get("xray_log") or "").strip()
+    if not path:
+        return ""
+    directory = os.path.dirname(path) or "."
+    if os.path.isdir(directory) and os.access(directory, os.W_OK):
+        return path
+    return ""
+
+
 def _api_address(settings: dict[str, str]) -> tuple[str, int]:
     raw = (settings.get("xray_api") or "127.0.0.1:10085").strip()
     host, _, port = raw.rpartition(":")
@@ -150,12 +166,11 @@ def build_config(nodes: list[dict], clients: list[dict], settings: dict[str, str
         inbounds.append(build_inbound(node, by_node.get(int(node["id"]), [])))
 
     config: dict[str, Any] = {
-        # error 留空会把日志丢到 stderr（journald），面板的「日志」页读的却是
-        # settings.xray_log 指向的文件，结果永远空白。这里显式写路径。
+        # 目录不可写时退回 ""（stderr / journald），绝不能因为日志路径把配置写死
         "log": {
             "loglevel": "warning",
             "access": "none",
-            "error": (settings.get("xray_log") or "/var/log/xray/error.log"),
+            "error": _log_target(settings),
         },
         "api": {
             "tag": "api",
@@ -425,8 +440,24 @@ class Xray:
     def log_tail(self, lines: int = 200) -> list[str]:
         from .util import tail_lines
 
-        path = self.settings.get("xray_log") or "/var/log/xray/error.log"
-        return tail_lines(path, lines)
+        path = self.settings.get("xray_log") or ""
+        if path:
+            rows = tail_lines(path, lines)
+            if rows:
+                return rows
+        # 文件不存在（正常，日志可能写在 journald 里）就回退读 journal，
+        # 面板服务在 install.sh 里加了 systemd-journal 组
+        service = self.settings.get("xray_service") or "xray"
+        try:
+            proc = self._run(
+                ["journalctl", "-u", service, "-n", str(max(1, min(int(lines), 5000))), "--no-pager", "-o", "cat"],
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        if proc.returncode != 0:
+            return []
+        return (proc.stdout or "").splitlines()[-lines:]
 
 
 def new_node_keys() -> tuple[str, str]:

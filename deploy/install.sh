@@ -246,6 +246,8 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=${DATA_DIR} /usr/local/etc/xray
+# 面板的「日志」页回退读 journald 时需要这个组
+SupplementaryGroups=systemd-journal
 
 [Install]
 WantedBy=multi-user.target

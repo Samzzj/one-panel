@@ -93,12 +93,19 @@ ACME_CONF="/etc/nginx/conf.d/acme-${DOMAIN}.conf"
 install -d -m 0755 "${ACME_WEBROOT}"
 
 TMP_ACME="$(mktemp)"
+# 只有 IPv6 真的可用时才加 [::]:80。禁用了 IPv6 的机器上（sysctl
+# net.ipv6.conf.all.disable_ipv6=1），这一行会让 nginx 启动直接失败：
+#   socket() [::]:80 failed (97: Address family not supported by protocol)
+IPV6_LISTEN=""
+if [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 1)" != "1" ]; then
+  IPV6_LISTEN="    listen [::]:80;"
+fi
 cat >"${TMP_ACME}" <<EOF
 # 由 Reality Panel 生成：HTTP-01 校验文件由 nginx 直接应答
 # 续期只需要 reload nginx，不需要停服务、不占用 443
 server {
     listen 80;
-    listen [::]:80;
+${IPV6_LISTEN}
     server_name ${DOMAIN};
 
     location /.well-known/acme-challenge/ {
